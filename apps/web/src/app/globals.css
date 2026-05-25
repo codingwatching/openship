@@ -5,6 +5,8 @@
 
 @theme inline {
   --font-sans: 'Gellix', 'SF Arabic', system-ui, -apple-system, sans-serif;
+  --color-panelDark: #1A1A1A;
+  --color-panelLight: #FFFFFF;
 }
 
 @layer base {
@@ -17,4 +19,37 @@
     background-color: var(--th-bg-page);
     color: var(--th-text-body);
   }
+
+}
+
+/* Mail landing — dark surface, scoped overrides.
+   Loaded outside @layer base so it cascades over body's light defaults
+   but Tailwind utilities still win for explicit text and border colors
+   set on individual elements via utility classes. */
+body:has(.mail-home) {
+  color: #ffffff;
+  background-color: #0F0F0F;
+  color-scheme: dark;
+}
+.mail-home,
+.mail-home * {
+  border-color: #313135;
+}
+.mail-home {
+  color: #ffffff;
+  /* Flip openship landing's --th-* tokens to white-on-dark for any
+     shared component (e.g. Footer) rendered inside the mail page. */
+  --th-text-heading:   rgba(255,255,255,1);
+  --th-text-title:     rgba(255,255,255,.92);
+  --th-text-strong:    rgba(255,255,255,.82);
+  --th-text-body:      rgba(255,255,255,.70);
+  --th-text-secondary: rgba(255,255,255,.60);
+  --th-text-muted:     rgba(255,255,255,.45);
+  --th-text-label:     rgba(255,255,255,.50);
+  --th-text-hint:      rgba(255,255,255,.40);
+  --th-text-ghost:     rgba(255,255,255,.20);
+  --th-bd-default:     #313135;
+  --th-bd-subtle:      #2a2a2d;
+  --th-bd-strong:      #4a4a4f;
+  --th-divider:        #2a2a2d;
 }

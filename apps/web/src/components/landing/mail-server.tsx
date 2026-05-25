@@ -1,13 +1,15 @@
 /**
- * Mail server spotlight — full self-hosted transactional mail, unlimited
- * domains, one-click setup. Image frame ready for /mail.png.
+ * Mail server spotlight — editorial copy on the left, dashboard preview on
+ * the right. Layout is symmetric: the left column's heading + body + points +
+ * stats and the right column's image + status row + CTAs balance to roughly
+ * equal heights so the two columns center as a single composition.
  */
 export function MailServer() {
   return (
     <section className="ms-section">
       <div className="ms-container">
         <div className="ms-grid">
-          {/* ── Text side ── */}
+          {/* Text side */}
           <div className="ms-lead">
             <p className="ms-eyebrow">Built-in mail server</p>
             <h2 className="ms-title">
@@ -21,58 +23,121 @@ export function MailServer() {
             </p>
 
             <ul className="ms-points">
-              <li>
-                <span className="ms-point-name">One-click setup.</span>
-                <span className="ms-point-desc">SPF, DKIM, DMARC, reverse DNS — verified and configured for you.</span>
-              </li>
-              <li>
-                <span className="ms-point-name">Unlimited domains.</span>
-                <span className="ms-point-desc">Add as many sending domains as you need. No add-on, no per-domain pricing.</span>
-              </li>
-              <li>
-                <span className="ms-point-name">Real deliverability.</span>
-                <span className="ms-point-desc">Warm-up, reputation tracking, bounce handling, suppression lists — out of the box.</span>
-              </li>
-              <li>
-                <span className="ms-point-name">Open SMTP & REST API.</span>
-                <span className="ms-point-desc">Plug straight in from your code. Webhooks for opens, clicks, bounces.</span>
-              </li>
+              {POINTS.map((p, i) => (
+                <li key={p.name}>
+                  <span className="ms-point-num">{String(i + 1).padStart(2, '0')}</span>
+                  <div className="ms-point-text">
+                    <span className="ms-point-name">{p.name}</span>
+                    <span className="ms-point-desc">{p.desc}</span>
+                  </div>
+                </li>
+              ))}
             </ul>
-
-            <div className="ms-stat-row">
-              <div className="ms-stat">
-                <span className="ms-stat-n">∞</span>
-                <span className="ms-stat-label">Domains</span>
-              </div>
-              <div className="ms-stat">
-                <span className="ms-stat-n">1</span>
-                <span className="ms-stat-label">Click setup</span>
-              </div>
-              <div className="ms-stat">
-                <span className="ms-stat-n">$0</span>
-                <span className="ms-stat-label">Add-on cost</span>
-              </div>
-            </div>
           </div>
 
-          {/* ── Image side ── */}
-          <figure className="ms-shot">
-            <div className="ms-shot-frame">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src="/mail.png"
-                alt="Openship mail server dashboard"
-                loading="lazy"
-                decoding="async"
-                className="ms-shot-img"
-              />
+          {/* Image side — image + status row + CTAs */}
+          <div className="ms-right">
+            <figure className="ms-shot">
+              <div className="ms-shot-frame">
+                <span className="ms-shot-chrome" aria-hidden="true">
+                  <span className="ms-shot-dot" />
+                  <span className="ms-shot-dot" />
+                  <span className="ms-shot-dot" />
+                  <span className="ms-shot-chrome-live">
+                    <span className="ms-shot-chrome-live-dot" />
+                    Live · 247 sending
+                  </span>
+                </span>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="/email-preview.png"
+                  alt="Openship mail dashboard"
+                  loading="lazy"
+                  decoding="async"
+                  width={1920}
+                  height={1080}
+                  className="ms-shot-img"
+                />
+              </div>
+            </figure>
+
+            {/* Status row — DNS records auto-configured */}
+            <div className="ms-status-row">
+              <div className="ms-status-head">
+                <svg
+                  className="ms-status-check"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle cx="8" cy="8" r="7.25" stroke="currentColor" strokeWidth="1.4" />
+                  <path
+                    d="M4.5 8.25 L7 10.5 L11.5 5.5"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    fill="none"
+                  />
+                </svg>
+                <span>Auto-configured</span>
+              </div>
+              <div className="ms-status-pills">
+                <span className="ms-status-pill">SPF</span>
+                <span className="ms-status-pill">DKIM</span>
+                <span className="ms-status-pill">DMARC</span>
+                <span className="ms-status-pill">TLS</span>
+              </div>
             </div>
-            <figcaption className="ms-shot-caption">
-              Mail dashboard — add a domain, verify, send.
-            </figcaption>
-          </figure>
+
+            <div className="ms-cta-row">
+              <a href="/login" className="th-btn group rounded-full px-6 py-2.5 text-[14px] font-medium">
+                Get started
+                <svg
+                  className="ml-1 -mr-1 h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2.2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                </svg>
+              </a>
+              <a href="/mail" className="th-btn-ghost group rounded-full px-6 py-2.5 text-[14px] font-medium">
+                See more
+                <svg
+                  className="ml-1 -mr-1 h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2.2}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                </svg>
+              </a>
+            </div>
+          </div>
         </div>
       </div>
     </section>
   );
 }
+
+const POINTS = [
+  {
+    name: 'One-click setup.',
+    desc: 'SPF, DKIM, DMARC, reverse DNS — verified and configured for you.',
+  },
+  {
+    name: 'Unlimited domains.',
+    desc: 'Add as many sending domains as you need. No add-on, no per-domain pricing.',
+  },
+  {
+    name: 'Real deliverability.',
+    desc: 'Warm-up, reputation tracking, bounce handling, suppression lists — out of the box.',
+  },
+  {
+    name: 'Open SMTP & REST API.',
+    desc: 'Plug straight in from your code. Webhooks for opens, clicks, bounces.',
+  },
+];

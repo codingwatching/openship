@@ -1,9 +1,13 @@
+"use client";
+
+import type React from "react";
+import { useRef } from "react";
 import { DarkSection } from "../dark-section";
 
-/* ─── Abstract corner marks — subtle, decorative, no fill ─────
- *  Each is a 1px-stroke line-art glyph that sits in the bottom-right
- *  corner of its cell at very low opacity. Not a labeled icon —
- *  a thematic accent that hints at the card's subject.
+/* Abstract corner marks — subtle, decorative, no fill.
+ * Each is a 1px-stroke line-art glyph that sits in the bottom-right
+ * corner of its cell at very low opacity. Not a labeled icon —
+ * a thematic accent that hints at the card's subject.
  */
 const MARKS = {
   /* 01 Deploy — outward-radiating waypoints (launch) */
@@ -140,34 +144,60 @@ export function Features() {
           </header>
 
           <div className="feat-grid">
-            {FEATURES.map((f) => (
-              <article key={f.n} className="feat-cell">
-                <div className="feat-cell-top">
-                  <div className="feat-cell-ident">
-                    <span className="feat-cell-n">{f.n}</span>
-                    <span className="feat-cell-tag">{f.tag}</span>
-                  </div>
-
-                  {/* Decorative top-right mark — present, never a label */}
-                  <svg
-                    className="feat-cell-mark"
-                    viewBox="0 0 100 100"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    aria-hidden="true"
-                  >
-                    {f.mark}
-                  </svg>
-                </div>
-
-                <h3 className="feat-cell-title">{f.title}</h3>
-                <p className="feat-cell-desc">{f.description}</p>
-              </article>
+            {FEATURES.map((f, i) => (
+              <FeatureCell key={f.n} feature={f} index={i} />
             ))}
           </div>
         </div>
       </DarkSection>
     </section>
+  );
+}
+
+type Feature = (typeof FEATURES)[number];
+
+function FeatureCell({ feature, index }: { feature: Feature; index: number }) {
+  const ref = useRef<HTMLElement>(null);
+
+  const handleMove = (e: React.MouseEvent<HTMLElement>) => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    el.style.setProperty("--mx", `${e.clientX - rect.left}px`);
+    el.style.setProperty("--my", `${e.clientY - rect.top}px`);
+  };
+
+  return (
+    <article
+      ref={ref}
+      onMouseMove={handleMove}
+      className="feat-cell"
+      style={{ "--feat-delay": `${index * 70}ms` } as React.CSSProperties}
+    >
+      <span className="feat-cell-orb" aria-hidden="true" />
+      <span className="feat-cell-edge" aria-hidden="true" />
+
+      <div className="feat-cell-top">
+        <div className="feat-cell-ident">
+          <span className="feat-cell-n">{feature.n}</span>
+          <span className="feat-cell-tag">{feature.tag}</span>
+        </div>
+
+        {/* Decorative top-right mark — present, never a label */}
+        <svg
+          className="feat-cell-mark"
+          viewBox="0 0 100 100"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.2"
+          aria-hidden="true"
+        >
+          {feature.mark}
+        </svg>
+      </div>
+
+      <h3 className="feat-cell-title">{feature.title}</h3>
+      <p className="feat-cell-desc">{feature.description}</p>
+    </article>
   );
 }

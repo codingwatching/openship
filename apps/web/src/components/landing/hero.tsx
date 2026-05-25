@@ -63,11 +63,11 @@ export function Hero() {
 
         {/* Headline */}
         <h1 className="animate-fade-in-up animate-delay-100">
-          <span className="block text-[clamp(2.75rem,6vw,4.75rem)] font-semibold leading-[1.06] tracking-[-0.035em] th-text-heading">
-            Deploy Anything.
+          <span className="block text-[clamp(2.5rem,5.5vw,4.25rem)] font-medium leading-[1.08] tracking-[-0.02em] th-text-heading">
+            Deploy anything.
           </span>
-          <span className="hero-headline-second block text-[clamp(2.75rem,6vw,4.75rem)] font-semibold leading-[1.06] tracking-[-0.035em]">
-            Own Everything.
+          <span className="hero-headline-second block text-[clamp(2.5rem,5.5vw,4.25rem)] font-light italic leading-[1.08] tracking-[-0.015em]">
+            Own everything.
           </span>
         </h1>
 
