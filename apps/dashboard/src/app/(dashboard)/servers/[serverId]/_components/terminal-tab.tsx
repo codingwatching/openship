@@ -1,36 +1,39 @@
-import { Terminal, SquareTerminal } from "lucide-react";
+"use client";
 
-export function TerminalTab() {
+import { Terminal } from "lucide-react";
+import { ServerTerminalTabs } from "@/components/terminal/ServerTerminalTabs";
+
+interface TerminalTabProps {
+  serverId: string;
+  serverName?: string;
+  /** Drives the WS lifecycle - only open while the tab is active so we
+   *  don't keep PTYs alive in the background. */
+  enabled: boolean;
+}
+
+export function TerminalTab({ serverId, serverName, enabled }: TerminalTabProps) {
   return (
-    <div className="space-y-6">
-      <div className="bg-card rounded-2xl border border-border/50">
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-border/50">
-          <div className="w-9 h-9 bg-zinc-500/10 rounded-xl flex items-center justify-center">
+    <div className="space-y-4">
+      <div className="overflow-hidden rounded-2xl border border-border/50 bg-card">
+        {/* Header */}
+        <div className="flex items-center gap-3 border-b border-border/50 px-5 py-4">
+          <div className="flex size-9 items-center justify-center rounded-xl bg-zinc-500/10">
             <Terminal className="size-[18px] text-zinc-500" />
           </div>
-          <div>
-            <h2 className="font-semibold text-foreground text-[15px]">
-              Terminal
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-[15px] font-semibold text-foreground">
+              Terminal {serverName ? <span className="text-muted-foreground">· {serverName}</span> : null}
             </h2>
             <p className="text-xs text-muted-foreground">
-              SSH shell access
+              Live SSH shells over WebSocket. Up to 3 concurrent — copy on select.
             </p>
           </div>
         </div>
-        <div className="p-8 flex flex-col items-center justify-center text-center">
-          <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mb-4">
-            <SquareTerminal className="size-8 text-muted-foreground/50" />
-          </div>
-          <h3 className="text-sm font-medium text-foreground mb-1">
-            SSH Terminal
-          </h3>
-          <p className="text-xs text-muted-foreground max-w-xs">
-            Web-based terminal access to your server will be available here.
-            Connect directly via SSH from the browser.
-          </p>
-          <div className="mt-4 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-full bg-muted/50 text-muted-foreground">
-            Coming soon
-          </div>
+
+        {/* Multi-shell tabs surface — fixed height so xterm has something to fit
+            against. Could be made resizable later. */}
+        <div className="h-[60vh] min-h-[480px] w-full">
+          <ServerTerminalTabs serverId={serverId} enabled={enabled} />
         </div>
       </div>
     </div>

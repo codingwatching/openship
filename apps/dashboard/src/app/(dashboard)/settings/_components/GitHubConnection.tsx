@@ -1,7 +1,8 @@
 "use client";
 
-import { Github, ExternalLink, Unplug, RefreshCw, Download, Terminal, CheckCircle2 } from "lucide-react";
+import { Github, ExternalLink, Unplug, RefreshCw, Download, Terminal, CheckCircle2, Cloud } from "lucide-react";
 import { useGitHub } from "@/context/GitHubContext";
+import { useCloud } from "@/context/CloudContext";
 import { useModal } from "@/context/ModalContext";
 import { SettingsSection } from "./SettingsSection";
 
@@ -18,6 +19,12 @@ export function GitHubConnection() {
     disconnect,
     installUrl,
   } = useGitHub();
+
+  // Self-hosted needs an active Openship Cloud connection to use the
+  // GitHub App at all — the App private key lives in openship.io and
+  // self-hosted instances proxy through it. PAT + gh CLI escape hatches
+  // don't require cloud.
+  const { connected: cloudConnected, startConnect: startCloudConnect } = useCloud();
 
   const { showModal, hideModal } = useModal();
 
@@ -57,12 +64,19 @@ export function GitHubConnection() {
           {/* Openship App / OAuth */}
           <SourceCard
             heading="Openship GitHub App"
-            sub="OAuth + App installation. Recommended - supports private repos, webhooks, and short-lived install tokens."
+            sub={
+              cloudConnected
+                ? "OAuth + App installation. Recommended - supports private repos, webhooks, and short-lived install tokens."
+                : "Requires Openship Cloud — the GitHub App is owned by openship.io. Connect cloud first."
+            }
             connected={sources.oauth.connected}
             active={sources.active === "oauth"}
             login={sources.oauth.login}
             avatarUrl={sources.oauth.avatarUrl}
-            onConnect={connect}
+            // When NOT cloud-connected, redirect the user to "Connect
+            // Openship Cloud" instead of trying to open an install URL
+            // that the local instance can't actually mint tokens against.
+            onConnect={cloudConnected ? () => connect("oauth") : startCloudConnect}
             connecting={connecting && !sources.oauth.connected}
             onDisconnect={() =>
               promptDisconnect(
@@ -72,6 +86,7 @@ export function GitHubConnection() {
               )
             }
             installUrl={installUrl}
+            requiresCloud={!cloudConnected}
           />
 
           {/* Local gh CLI */}
@@ -86,7 +101,7 @@ export function GitHubConnection() {
             active={sources.active === "cli"}
             login={sources.cli.login}
             avatarUrl={sources.cli.avatarUrl}
-            onConnect={connect}
+            onConnect={() => connect("cli")}
             connecting={connecting && !sources.cli.available}
             onDisconnect={() =>
               promptDisconnect(
@@ -207,7 +222,7 @@ export function GitHubConnection() {
             on push, and manage branches directly from the dashboard.
           </p>
           <button
-            onClick={connect}
+            onClick={() => connect()}
             disabled={connecting}
             className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium bg-foreground text-background hover:bg-foreground/90 rounded-xl transition-colors disabled:opacity-50"
           >
@@ -246,8 +261,15 @@ function SourceCard(props: {
   onDisconnect: () => void;
   installUrl?: string | null;
   isCli?: boolean;
+  /**
+   * True when this is the Openship App card AND the user hasn't
+   * connected to Openship Cloud yet. Swaps the connect button copy +
+   * icon so the user understands they need cloud first, and points
+   * `onConnect` at the cloud-connect flow instead of GitHub.
+   */
+  requiresCloud?: boolean;
 }) {
-  const { heading, sub, connected, active, login, avatarUrl, onConnect, connecting, onDisconnect, installUrl, isCli } = props;
+  const { heading, sub, connected, active, login, avatarUrl, onConnect, connecting, onDisconnect, installUrl, isCli, requiresCloud } = props;
   return (
     <div
       className={`rounded-xl border p-3.5 transition-colors ${
@@ -314,8 +336,20 @@ function SourceCard(props: {
                 disabled={connecting}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-foreground text-background hover:bg-foreground/90 rounded-lg transition-colors disabled:opacity-50"
               >
-                {connecting ? <RefreshCw className="size-3 animate-spin" /> : isCli ? <Terminal className="size-3" /> : <Github className="size-3" />}
-                {isCli ? "Use gh CLI" : "Connect Openship App"}
+                {connecting ? (
+                  <RefreshCw className="size-3 animate-spin" />
+                ) : requiresCloud ? (
+                  <Cloud className="size-3" />
+                ) : isCli ? (
+                  <Terminal className="size-3" />
+                ) : (
+                  <Github className="size-3" />
+                )}
+                {requiresCloud
+                  ? "Connect Openship Cloud"
+                  : isCli
+                    ? "Use gh CLI"
+                    : "Connect Openship App"}
               </button>
             )}
           </div>

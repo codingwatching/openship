@@ -49,6 +49,12 @@ export {
   type ServerAnalyticsGeoRow,
   type NewServerAnalyticsGeo,
 } from "./analytics.repo";
+export {
+  createTerminalSessionRepo,
+  type TerminalSession,
+  type NewTerminalSession,
+  type TerminalExitReason,
+} from "./terminal-session.repo";
 
 // ─── Convenience: pre-bound repos using the singleton db ─────────────────────
 
@@ -67,6 +73,7 @@ import { createInstanceSettingsRepo } from "./instance-settings.repo";
 import { createServerRepo } from "./server.repo";
 import { createMailServerRepo } from "./mail-server.repo";
 import { createAnalyticsRepo } from "./analytics.repo";
+import { createTerminalSessionRepo } from "./terminal-session.repo";
 
 /**
  * Pre-bound repository instances using the singleton `db`.
@@ -92,4 +99,5 @@ export const repos = {
   server: createServerRepo(db),
   mailServer: createMailServerRepo(db),
   analytics: createAnalyticsRepo(db),
+  terminalSession: createTerminalSessionRepo(db),
 } as const;

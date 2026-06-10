@@ -60,7 +60,12 @@ interface GitHubContextValue {
   loading: boolean;
   mode: GitHubMode;
   sources: GitHubSources | null;
-  connect: () => Promise<void>;
+  /**
+   * Initiate a GitHub connection. `source` discriminates which dual-source
+   * card was clicked in cli mode — "oauth" forces the Openship App install
+   * flow even when gh CLI is already authenticated. Omit on legacy modes.
+   */
+  connect: (source?: "oauth" | "cli") => Promise<void>;
   disconnect: (source?: "oauth" | "cli" | "all") => Promise<void>;
 
   /* CLI / Device flow */
@@ -107,11 +112,16 @@ export function GitHubProvider({ children, initialData }: GitHubProviderProps) {
   const [connecting, setConnecting] = useState(false);
   const [loading, setLoading] = useState(!initialData);
   
-  // Resolve the initial mode correctly
-  const initialMode = initialData?.mode === "app" ? "cloud" : 
-                      initialData?.mode === "cli" ? "cli" : 
-                      initialData?.mode === "token" ? "token" : 
-                      initialData?.mode === "oauth" ? "desktop" : 
+  // Resolve the initial mode correctly.
+  // - "app"       (cloud-mode SaaS holds App creds)        → "cloud"
+  // - "cloud-app" (self-hosted proxies through openship.io) → "cloud"
+  //   Same UX: managed by Openship Cloud, installations list, install URL.
+  //   The distinction matters server-side (where the JWT gets signed) but
+  //   the dashboard renders identically.
+  const initialMode = initialData?.mode === "app" || initialData?.mode === "cloud-app" ? "cloud" :
+                      initialData?.mode === "cli" ? "cli" :
+                      initialData?.mode === "token" ? "token" :
+                      initialData?.mode === "oauth" ? "desktop" :
                       (initialData?.mode || "cloud");
 
   const [mode, setMode] = useState<GitHubMode>(initialMode as GitHubMode);
@@ -130,9 +140,10 @@ export function GitHubProvider({ children, initialData }: GitHubProviderProps) {
     try {
       const res = await githubApi.getUserHome();
       if (res?.mode) {
-        // Map backend mode to frontend mode type
+        // Map backend mode to frontend mode type. "app" + "cloud-app"
+        // both render as "cloud" — distinction is server-side only.
         const m = res.mode as string;
-        if (m === "app") setMode("cloud");
+        if (m === "app" || m === "cloud-app") setMode("cloud");
         else if (m === "cli") setMode("cli");
         else if (m === "token") setMode("token");
         else if (m === "oauth") setMode("desktop");
@@ -172,7 +183,7 @@ export function GitHubProvider({ children, initialData }: GitHubProviderProps) {
   }, [refresh, initialData]);
 
   /* ── Connect GitHub ─────────────────────────────────────────── */
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (source?: "oauth" | "cli") => {
     setConnecting(true);
     setCliAction(null);
 
@@ -187,7 +198,7 @@ export function GitHubProvider({ children, initialData }: GitHubProviderProps) {
     };
 
     try {
-      const res = await githubApi.connect();
+      const res = await githubApi.connect(source);
 
       // Already connected - just refresh
       if (res?.connected) {

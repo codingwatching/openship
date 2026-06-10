@@ -29,6 +29,8 @@ export type {
   SslResult,
   SshConfig,
   CommandExecutor,
+  ShellOptions,
+  ShellSession,
 } from "./types";
 
 export { BUILD_STEPS } from "./types";

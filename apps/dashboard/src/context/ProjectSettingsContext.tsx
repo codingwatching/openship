@@ -10,11 +10,51 @@ import React, {
   useMemo,
 } from "react";
 import { projectsApi, servicesApi, type Service } from "@/lib/api";
+import { useProjectInfo } from "@/hooks/useProjectEndpoints";
+
+interface ProjectDomain {
+  domain: string;
+  primary?: boolean;
+  [key: string]: any;
+}
+
+interface ProjectOptions {
+  buildCommand?: string;
+  outputDirectory?: string;
+  productionPaths?: string;
+  installCommand?: string;
+  startCommand?: string;
+  productionPort?: string;
+  rootDirectory?: string;
+  hasBuild?: boolean;
+  hasServer?: boolean;
+  [key: string]: any;
+}
 
 interface BasicProjectData {
+  // `id` and `slug` are required because consumers pass them straight to
+  // projectsApi as primary keys; treating them as optional would force
+  // every callsite to handle `undefined`. They default to "" in the
+  // pre-fetch initial state and get populated by `useProjectInfo`.
+  id: string;
+  slug: string;
   name: string;
   description: string;
   framework: string;
+  // Fields populated by `useProjectInfo` from /projects/:id/info.
+  options?: ProjectOptions;
+  domains?: ProjectDomain[];
+  buildImage?: string;
+  hasMultipleServices?: boolean;
+  serviceCount?: number;
+  activeDeploymentId?: string | null;
+  // Per-project deploy target — independent of the dashboard install mode.
+  // "cloud" = deployed to openship cloud; "server" = remote VPS; "local" =
+  // user's own machine. Consumers gate behavior on this (e.g. AddServiceModal
+  // hides the local-image catalog for cloud projects).
+  deployTarget?: "cloud" | "server" | "local";
+  deletedAt?: string | null;
+  packageManager?: string;
   [key: string]: any;
 }
 
@@ -74,6 +114,21 @@ interface BuildData {
   error: string | null;
 }
 
+// Defaults applied when project.options has no value for a field.
+// Used by the `buildData` view in the provider — defaults first,
+// then server values override via spread.
+const BUILD_OPTION_DEFAULTS = {
+  buildCommand: "",
+  outputDirectory: ".",
+  productionPaths: "",
+  installCommand: "bun install",
+  startCommand: "npm start",
+  productionPort: "",
+  rootDirectory: "./",
+  hasBuild: true,
+  hasServer: true,
+} as const;
+
 interface TerminalLogsData {
   logs: string[];
   isStreaming: boolean;
@@ -96,15 +151,18 @@ interface ProjectSettingsContextType {
   // Project basic data
   projectData: BasicProjectData;
   setProjectData: React.Dispatch<React.SetStateAction<BasicProjectData>>;
-  updateProjectData: (updates: Partial<BasicProjectData>) => Promise<void>;
+  // Update helpers below mutate context state only — they do NOT persist.
+  // Callers must hit projectsApi.* themselves and only invoke these on
+  // success. Synchronous to make that contract explicit.
+  updateProjectData: (updates: Partial<BasicProjectData>) => void;
 
   // Domains
   domainsData: DomainsData;
-  updateDomains: (domains: any[]) => Promise<void>;
+  updateDomains: (domains: ProjectDomain[]) => void;
 
   // Environment
   environmentData: EnvironmentData;
-  updateEnvironment: (envVars: any) => Promise<void>;
+  updateEnvironment: (envVars: any) => void;
   refreshEnvironment: () => Promise<void>;
 
   // Git
@@ -113,7 +171,7 @@ interface ProjectSettingsContextType {
 
   // Build
   buildData: BuildData;
-  updateBuild: (buildInfo: any) => Promise<void>;
+  updateBuild: (buildInfo: Partial<BuildData>) => void;
 
   // Terminal Logs
   terminalLogsData: TerminalLogsData;
@@ -171,6 +229,8 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
 }) => {
   const [projectData, setProjectData] = useState<BasicProjectData>(
     initialProjectData || {
+      id: "",
+      slug: "",
       name: "",
       description: "",
       framework: "",
@@ -180,12 +240,6 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
   // Analytics + projectInfo state moved to `@/hooks/useProjectEndpoints`.
   // The provider no longer fires those fetches — consumers call the
   // hooks directly and the module-level cache dedups across components.
-
-  const [domainsData, setDomainsData] = useState<DomainsData>({
-    domains: [],
-    isLoading: false,
-    error: null,
-  });
 
   const [environmentData, setEnvironmentData] = useState<EnvironmentData>({
     envVars: {},
@@ -202,21 +256,6 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
   });
 
   const [environments, setEnvironments] = useState<ProjectEnvironment[]>([]);
-
-  const [buildData, setBuildData] = useState<BuildData>({
-    buildCommand: "",
-    outputDirectory: ".",
-    productionPaths: "",
-    installCommand: "bun install",
-    startCommand: "npm start",
-    productionPort: "3000",
-    buildImage: "node:22",
-    rootDirectory: "./",
-    hasBuild: true,
-    hasServer: true,
-    isLoading: true,
-    error: null,
-  });
 
   const [terminalLogsData, setTerminalLogsData] = useState<TerminalLogsData>({
     logs: [],
@@ -240,11 +279,84 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
   const [errorType, setErrorType] = useState<
     "project-not-found" | "repo-not-found" | "access-denied" | null
   >(null);
-  const [domain, setDomain] = useState("");
 
-  // Derived: do we have multi-service rendering paths to enable? The
-  // assignment was accidentally stripped along with the analytics
-  // refactor; restoring it here matches the original semantics —
+  // ─── Single source of truth: useProjectInfo ────────────────────────────
+  //
+  // /projects/:id/info is the canonical source for the whole project
+  // payload (basics + options + domains + environments). The hook gives
+  // us cache + dedup + invalidation via `invalidateProjectCaches(id)`.
+  //
+  // - `projectData` is a useState seeded from the hook so consumers can
+  //   still call `setProjectData(prev => ...)` for optimistic local
+  //   updates (delete flow, name edits, etc.). The effect below
+  //   re-seeds on every fresh fetch — the canonical server data wins
+  //   after an invalidation.
+  //
+  // - `buildData`, `domainsData`, `domain` are NOT state. They are
+  //   `useMemo` views over `projectData` (and the hook's loading state).
+  //   This kills the previous five-state mirror-via-effect anti-pattern:
+  //   one place to write, derived views update automatically.
+  //
+  // - `updateBuild` and `updateDomains` write back through
+  //   `setProjectData` into `projectData.options.*` and
+  //   `projectData.domains` respectively, where the data actually lives.
+  const {
+    data: projectInfo,
+    isLoading: isLoadingProjectInfo,
+    error: projectInfoError,
+  } = useProjectInfo(id);
+
+  // When the user navigates from /projects/A to /projects/B, the layout
+  // (and this provider) stays mounted — Next.js just re-renders with a
+  // new `id` prop. `useProjectInfo` keeps the previous project's data
+  // until B's fetch resolves, which would otherwise leak project A's
+  // values into B's UI (build settings, domains, etc.) during the
+  // loading window. Clearing on `id` change closes that window.
+  const lastIdRef = useRef(id);
+  useEffect(() => {
+    if (lastIdRef.current === id) return;
+    lastIdRef.current = id;
+    setProjectData(
+      initialProjectData || { id: "", slug: "", name: "", description: "", framework: "" },
+    );
+    setEnvironments([]);
+  }, [id, initialProjectData]);
+
+  useEffect(() => {
+    if (projectInfo?.project) setProjectData(projectInfo.project);
+    if (projectInfo?.environments) setEnvironments(projectInfo.environments);
+  }, [projectInfo]);
+
+  const buildData = useMemo<BuildData>(
+    () => ({
+      ...BUILD_OPTION_DEFAULTS,
+      ...projectData.options,
+      // buildImage lives at top-level on the project, not in options.
+      buildImage: projectData.buildImage || "node:22",
+      isLoading: isLoadingProjectInfo,
+      error: projectInfoError,
+    }),
+    [projectData, isLoadingProjectInfo, projectInfoError],
+  );
+
+  const domainsData = useMemo<DomainsData>(
+    () => ({
+      domains: projectData.domains || [],
+      isLoading: isLoadingProjectInfo,
+      error: projectInfoError,
+    }),
+    [projectData.domains, isLoadingProjectInfo, projectInfoError],
+  );
+
+  const domain = useMemo(
+    () =>
+      projectData.domains?.find((d: any) => d.primary)?.domain ||
+      projectData.domains?.[0]?.domain ||
+      "",
+    [projectData.domains],
+  );
+
+  // Derived: do we have multi-service rendering paths to enable?
   // projectData hint OR serviceCount > 1 OR loaded services > 1.
   const hasMultipleServices =
     projectData.hasMultipleServices === true ||
@@ -380,26 +492,45 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
     }
   }, [id]);
 
-  // Update functions
-  const updateProjectData = async (updates: Partial<BasicProjectData>) => {
+  // ─── Local-state update helpers ────────────────────────────────────────
+  //
+  // These mutate context state only — they do NOT persist to the API. The
+  // calling component is responsible for calling projectsApi.* first and
+  // then invoking the helper on success (and/or `invalidateProjectCaches`
+  // to force a refetch). Kept synchronous + useCallback-stabilized so the
+  // value-memo identity below stays stable across renders.
+
+  const updateProjectData = useCallback((updates: Partial<BasicProjectData>) => {
     setProjectData((prev) => ({ ...prev, ...updates }));
-    // Add your API call here to persist changes
-  };
+  }, []);
 
-  const updateDomains = async (domains: any[]) => {
-    setDomainsData((prev) => ({ ...prev, domains }));
-    // Add your API call here to persist changes
-  };
+  const updateDomains = useCallback((domains: ProjectDomain[]) => {
+    // Domains live on the project itself, so we mutate projectData
+    // directly. The `domainsData` view is a useMemo that re-derives
+    // from projectData.domains, so consumers update automatically.
+    setProjectData((prev) => ({ ...prev, domains }));
+  }, []);
 
-  const updateEnvironment = async (envVars: any) => {
+  const updateEnvironment = useCallback((envVars: any) => {
     setEnvironmentData((prev) => ({ ...prev, envVars }));
-    // Add your API call here to persist changes
-  };
+  }, []);
 
-  const updateBuild = async (buildInfo: any) => {
-    setBuildData((prev) => ({ ...prev, ...buildInfo }));
-    // Add your API call here to persist changes
-  };
+  const updateBuild = useCallback((buildInfo: Partial<BuildData>) => {
+    // BuildData is a flat view but the underlying fields live in two
+    // places on the project: `buildImage` is top-level, everything
+    // else nests under `project.options`. Split the input, drop the
+    // view-only `isLoading`/`error`, and merge each piece into the
+    // right slot. The `buildData` useMemo re-derives from projectData
+    // on the next render.
+    const { buildImage, isLoading: _il, error: _err, ...optionUpdates } = buildInfo;
+    void _il;
+    void _err;
+    setProjectData((prev) => ({
+      ...prev,
+      ...(buildImage !== undefined && { buildImage }),
+      options: { ...(prev.options || {}), ...optionUpdates },
+    }));
+  }, []);
 
   const servicesRequestRef = useRef<{ projectId: string; promise: Promise<Service[]> } | null>(
     null,

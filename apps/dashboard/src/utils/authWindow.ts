@@ -90,13 +90,22 @@ function createBrowserHandle(initialUrl = "about:blank"): AuthWindowHandle {
 
 /* ── Electron opener ──────────────────────────────────────────────── */
 
-function createElectronHandle(_initialUrl?: string): AuthWindowHandle {
+function createElectronHandle(initialUrl?: string): AuthWindowHandle {
   // In Electron, `window.open()` is intercepted and denied.
   // We use the desktop bridge to open URLs in the system browser and
   // detect "completion" when the user brings focus back to the app.
 
   const desktop = (window as any).desktop;
   let focusHandler: (() => void) | null = null;
+
+  // If the caller supplied a URL up front (matching the browser handle's
+  // behavior where `window.open(initialUrl, ...)` opens immediately),
+  // hand it to the desktop bridge now. Without this, callers that pass
+  // `openAuthWindow(url)` and never call `.navigate()` (GitHubContext,
+  // the legacy initAuthWindow helper) would silently no-op in desktop.
+  if (initialUrl) {
+    try { desktop?.onboarding?.openExternal?.(initialUrl); } catch { /* bridge missing */ }
+  }
 
   function cleanup() {
     if (focusHandler) {

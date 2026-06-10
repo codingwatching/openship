@@ -16,12 +16,14 @@
  */
 
 import type { Context } from "hono";
+import crypto from "node:crypto";
 import { SYSTEM } from "@repo/core";
 import { getUserId } from "../../lib/controller-helpers";
 import { auth } from "../../lib/auth";
 import { issueNamespaceToken, getOblienClient } from "../../lib/openship-cloud";
 import { generateHandoffCode, exchangeHandoffCode } from "../../lib/cloud-auth-proxy";
 import { runCloudPreflight } from "../../lib/cloud-preflight";
+import * as githubAuth from "../github/github.auth";
 
 // ─── Cloud analytics proxy (master client) ───────────────────────────────────
 
@@ -348,4 +350,180 @@ export async function pagesProxy(c: Context) {
     c.status(status as 400 | 401 | 403 | 404 | 409 | 422 | 429 | 500);
     return c.json({ error: message, code, details });
   }
+}
+
+// ─── GitHub App proxy (cloud-mode only — holds the App private key) ─────────
+//
+// These endpoints are what self-hosted instances call via cloud-client.ts.
+// All App credentials (GITHUB_APP_ID, GITHUB_PRIVATE_KEY) live here in cloud
+// mode and never leave — local just hands off (userId, request) and receives
+// resolved data back. Local never sees the JWT, never signs anything.
+//
+// `cloudSessionAuth` middleware (applied on the routes file) resolves the
+// caller's Better-Auth user from their session token; `getUserId(c)` returns
+// that user's id. Each cloud user's installations / OAuth identity are
+// already managed by the existing local github code paths, so we just reuse
+// them — this controller is a thin policy/translation layer.
+
+// One-shot install states (in-memory, 5-min TTL). Used to round-trip from
+// install-url → exchange-code: cloud mints a state, the GitHub install
+// callback comes back to the local instance which presents the state to
+// exchange-code; cloud verifies it matches the issuing user. Stops a leaked
+// callback URL from being replayed against a different user's account.
+interface InstallStateRow {
+  userId: string;
+  expiresAt: number;
+}
+const installStates = new Map<string, InstallStateRow>();
+const INSTALL_STATE_TTL_MS = 5 * 60 * 1000;
+
+function issueInstallState(userId: string): string {
+  // Sweep expired entries on every issue — cheap with a small Map.
+  const now = Date.now();
+  for (const [k, v] of installStates) {
+    if (v.expiresAt <= now) installStates.delete(k);
+  }
+  const token = crypto.randomBytes(16).toString("base64url");
+  installStates.set(token, { userId, expiresAt: now + INSTALL_STATE_TTL_MS });
+  return token;
+}
+
+function consumeInstallState(state: string, userId: string): boolean {
+  const row = installStates.get(state);
+  if (!row) return false;
+  installStates.delete(state); // single-use
+  if (row.expiresAt <= Date.now()) return false;
+  return row.userId === userId;
+}
+
+/**
+ * POST /api/cloud/github/install-url
+ * Returns the central App's installation URL plus a one-time state token
+ * scoped to this cloud user. Local presents the state back at exchange-code.
+ */
+export async function githubInstallUrl(c: Context) {
+  const userId = getUserId(c);
+  const state = issueInstallState(userId);
+  return c.json({
+    data: {
+      url: githubAuth.getInstallUrl(),
+      state,
+    },
+  });
+}
+
+/**
+ * POST /api/cloud/github/exchange-code  { code, state }
+ *
+ * The "code" here isn't a GitHub OAuth code — it's the installation_id
+ * (or whatever opaque token) the local callback received after the user
+ * approved the install on github.com. The state token binds the exchange
+ * to the user who initiated the install (CSRF defense + replay defense).
+ *
+ * After verification, we hit GitHub for the user's full installations
+ * list (reusing the standard getUserInstallations path) and return it.
+ */
+export async function githubExchangeCode(c: Context) {
+  const userId = getUserId(c);
+  const body = await c.req.json<{ code?: string; state?: string }>();
+  if (!body.state || !consumeInstallState(body.state, userId)) {
+    return c.json({ error: "Invalid or expired install state" }, 401);
+  }
+
+  // Fetch the user's installations fresh from GitHub via the
+  // existing helper. The local DB write inside getUserInstallations
+  // updates the cloud-side cache; the response shape mirrors what
+  // cloudGithubInstallations() will return for subsequent calls.
+  const installations = await githubAuth.getUserInstallations(userId);
+  return c.json({
+    data: {
+      installations: installations.map((i) => ({
+        id: i.id,
+        login: i.account.login,
+        avatarUrl: i.account.avatar_url,
+        type: i.account.type,
+      })),
+    },
+  });
+}
+
+/**
+ * GET /api/cloud/github/installations
+ * The cloud user's current installations. Read-through to GitHub via the
+ * standard getUserInstallations path which also refreshes the DB cache.
+ */
+export async function githubInstallations(c: Context) {
+  const userId = getUserId(c);
+  const installations = await githubAuth.getUserInstallations(userId);
+  return c.json({
+    data: installations.map((i) => ({
+      id: i.id,
+      login: i.account.login,
+      avatarUrl: i.account.avatar_url,
+      type: i.account.type,
+    })),
+  });
+}
+
+/**
+ * POST /api/cloud/github/installation-token  { installationId?, owner, repos? }
+ *
+ * Mints a short-lived (~60min) installation access token for the given
+ * owner. Cloud signs the JWT with its private key and hits GitHub's
+ * /access_tokens endpoint. Local uses the returned token directly
+ * against github.com for the actual git clone — cloud never sees the
+ * source code.
+ */
+export async function githubInstallationToken(c: Context) {
+  const userId = getUserId(c);
+  const body = await c.req.json<{
+    installationId?: number;
+    owner?: string;
+    repos?: string[];
+  }>();
+  if (!body.owner) {
+    return c.json({ error: "owner is required" }, 400);
+  }
+
+  const token = await githubAuth
+    .getInstallationToken(userId, body.owner, body.installationId)
+    .catch(() => null);
+  if (!token) {
+    return c.json(
+      { error: `No GitHub App installation found for ${body.owner}` },
+      404,
+    );
+  }
+
+  // getInstallationToken caches the token for 50min; the returned
+  // expiresAt is approximate — clients should not rely on it being
+  // exact. The cloud-client refreshes ~5min before this.
+  return c.json({
+    data: {
+      token,
+      expiresAt: new Date(Date.now() + 55 * 60 * 1000).toISOString(),
+    },
+  });
+}
+
+/**
+ * GET /api/cloud/github/user-status
+ * The cloud-resolved OAuth identity (login, avatar) for the calling user.
+ * Local renders this in the GitHub settings panel; the OAuth account itself
+ * lives in cloud's Better-Auth, NOT in the self-hosted instance.
+ */
+export async function githubUserStatus(c: Context) {
+  const userId = getUserId(c);
+  const status = await githubAuth.getUserStatus(userId);
+  if (!status.connected) {
+    return c.json({ data: { connected: false as const } });
+  }
+  return c.json({
+    data: {
+      connected: true as const,
+      login: status.login,
+      avatarUrl: status.avatar_url,
+      id: status.id,
+    },
+  });
 }

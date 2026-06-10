@@ -365,4 +365,57 @@ export interface CommandExecutor {
    * Not available on LocalExecutor.
    */
   forwardPort?(remoteHost: string, remotePort: number): Promise<Duplex>;
+
+  /**
+   * Open an interactive PTY shell on the target machine.
+   *
+   * Returns a ShellSession with bidirectional byte streams (stdin/stdout/
+   * stderr) plus window-resize and exit hooks. The caller is responsible
+   * for piping a terminal frontend (e.g. xterm.js over a WebSocket) and
+   * calling close() on shutdown.
+   *
+   * Currently only implemented by SshExecutor (LocalExecutor would need
+   * node-pty for parity).
+   */
+  openShell?(opts?: ShellOptions): Promise<ShellSession>;
+}
+
+// ─── Interactive PTY shell ──────────────────────────────────────────────────
+
+export interface ShellOptions {
+  /** Initial terminal column count (default 80). */
+  cols?: number;
+  /** Initial terminal row count (default 24). */
+  rows?: number;
+  /** TERM env value advertised to the remote shell (default "xterm-256color"). */
+  term?: string;
+}
+
+/**
+ * Live interactive PTY session.
+ *
+ * Lifecycle:
+ *   1. Open via executor.openShell({ cols, rows }).
+ *   2. Pipe stdin/stdout/stderr to/from the user-facing transport.
+ *   3. Call setWindow(cols, rows) on every terminal resize.
+ *   4. Subscribe to onClose to learn when the shell exits.
+ *   5. Call close() on teardown - or just wait for the remote shell to
+ *      exit. Both paths converge on the same cleanup.
+ *
+ * The session does NOT auto-reconnect; if the underlying connection
+ * drops, the consumer reopens a new shell.
+ */
+export interface ShellSession {
+  /** Writable stream for keystrokes / commands. */
+  stdin: import("node:stream").Writable;
+  /** Readable byte stream of shell stdout (already interleaved with stderr by the PTY). */
+  stdout: import("node:stream").Readable;
+  /** Readable byte stream of stderr (typically empty when a PTY is allocated). */
+  stderr: import("node:stream").Readable;
+  /** Resize the remote PTY window. Safe to call any number of times. */
+  setWindow(cols: number, rows: number): void;
+  /** Close the session. Best-effort: the underlying channel may already be gone. */
+  close(signal?: string): void;
+  /** Register a callback fired exactly once when the shell exits. */
+  onClose(cb: (code: number | null, signal?: string) => void): void;
 }

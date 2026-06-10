@@ -252,4 +252,14 @@ export const endpoints = {
     disconnect: "cloud/disconnect",
     status: "cloud/status",
   },
+
+  /* ---------------------------------------------------------------- */
+  /*  Interactive terminal (xterm.js ↔ WS ↔ ssh2 PTY)                */
+  /* ---------------------------------------------------------------- */
+  terminal: {
+    ticket: "terminal/ticket",
+    // The WebSocket path is constructed from getApiBaseUrl() with
+    // protocol swap; see lib/api/terminal.ts buildTerminalWsUrl.
+    wsPath: (serverId: string) => `terminal/ws/${serverId}`,
+  },
 } as const;

@@ -20,8 +20,17 @@ export const githubApi = {
   /** Check GitHub connection status */
   getStatus: () => api.get<any>(endpoints.github.status),
 
-  /** Start GitHub OAuth connection */
-  connect: () => api.post<any>(endpoints.github.connect),
+  /**
+   * Start a GitHub connection. Pass `source` from the dashboard's
+   * dual-source settings panel:
+   *   - "oauth" → force the Openship App install flow (even if gh CLI
+   *     is already authenticated). Used by the "Connect Openship App"
+   *     button so it never short-circuits on a pre-existing cli token.
+   *   - "cli"   → only consider the gh CLI source.
+   *   - omit    → server picks based on installation auth mode.
+   */
+  connect: (source?: "oauth" | "cli") =>
+    api.post<any>(endpoints.github.connect, source ? { source } : undefined),
 
   /** Poll device flow status */
   pollConnect: () => api.get<any>(endpoints.github.connectPoll),

@@ -32,6 +32,11 @@ import { LOCAL_SERVICE_CATALOG } from "./local-service-catalog";
 interface AddServiceModalProps {
   open: boolean;
   projectName: string;
+  // True when the *project itself* deploys to openship cloud, regardless of
+  // the dashboard install mode. A self-hosted dashboard can still manage a
+  // cloud project — in that case only cloud (Oblien) images are valid and
+  // the local upstream-image catalog must be hidden.
+  isCloudProject?: boolean;
   onClose: () => void;
   onSubmit: (data: ServiceInput) => Promise<void>;
 }
@@ -201,9 +206,13 @@ function bucketEntry(entry: ImageCatalogEntry): string {
   return OTHER_CATEGORY_ID;
 }
 
-export function AddServiceModal({ open, projectName, onClose, onSubmit }: AddServiceModalProps) {
+export function AddServiceModal({ open, projectName, isCloudProject, onClose, onSubmit }: AddServiceModalProps) {
   const { deployMode } = usePlatform();
-  const isCloudMode = deployMode === "cloud";
+  // Cloud-only catalog when EITHER the install is the SaaS dashboard
+  // (deployMode === "cloud") OR this specific project is deployed to
+  // openship cloud (isCloudProject). In either case the local upstream-
+  // image catalog isn't applicable and we pin the source to "cloud".
+  const cloudOnly = deployMode === "cloud" || !!isCloudProject;
 
   // Step state - "pick" shows the catalog, "configure" shows the form.
   const [step, setStep] = useState<"pick" | "configure">("pick");
@@ -218,11 +227,12 @@ export function AddServiceModal({ open, projectName, onClose, onSubmit }: AddSer
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [cloudConnected, setCloudConnected] = useState<boolean | null>(null);
   // Catalog source: "local" = curated upstream Docker images, "cloud" = Oblien
-  // managed images. Cloud-mode deployments are pinned to "cloud" (it's their
-  // only valid source); local deployments default to "local" but can flip to
-  // "cloud" via the switcher when the user wants a managed image.
+  // managed images. Cloud-only contexts (SaaS install OR cloud-deployed
+  // project) are pinned to "cloud" — it's the only valid source. Local
+  // projects on local installs default to "local" but can flip via the
+  // switcher when the user wants a managed image.
   const [catalogSource, setCatalogSource] = useState<"local" | "cloud">(
-    isCloudMode ? "cloud" : "local",
+    cloudOnly ? "cloud" : "local",
   );
 
   // Configure step state. Ports is a single-line, comma-separated string -
@@ -249,7 +259,7 @@ export function AddServiceModal({ open, projectName, onClose, onSubmit }: AddSer
     setSelected(null);
     setSearchQuery("");
     setActiveCategory(null);
-    setCatalogSource(isCloudMode ? "cloud" : "local");
+    setCatalogSource(cloudOnly ? "cloud" : "local");
     setName("");
     setImage("");
     setPorts("");
@@ -477,11 +487,12 @@ export function AddServiceModal({ open, projectName, onClose, onSubmit }: AddSer
                 the deploy-mode context, not buried in the right pane. Only
                 shown on the picker step (configure is already scoped to a
                 single selected service) and only when the user has a real
-                choice - cloud deploys are pinned to the cloud catalog. */}
-            {step === "pick" && !isCloudMode ? (
+                choice - cloud-only contexts (SaaS install OR cloud-deployed
+                project) are pinned to the cloud catalog. */}
+            {step === "pick" && !cloudOnly ? (
               <SourceSwitcher value={catalogSource} onChange={setCatalogSource} />
             ) : (
-              <ModeBadge mode={isCloudMode ? "cloud" : "local"} />
+              <ModeBadge mode={cloudOnly ? "cloud" : "local"} />
             )}
             <button
               type="button"

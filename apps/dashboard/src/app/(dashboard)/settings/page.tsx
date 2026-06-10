@@ -8,7 +8,6 @@ import { useToast } from "@/context/ToastContext";
 
 import { BuildPreferences } from "./_components/BuildPreferences";
 import { DeployDefaults } from "./_components/DeployDefaults";
-import { ServerConnection } from "./_components/ServerConnection";
 import { CloudConnection } from "./_components/CloudConnection";
 import { GitHubConnection } from "./_components/GitHubConnection";
 import { CloneCredentials } from "./_components/CloneCredentials";
@@ -28,7 +27,7 @@ export default function SettingsPage() {
 }
 
 function SettingsPageInner() {
-  const { selfHosted, authMode } = usePlatform();
+  const { selfHosted } = usePlatform();
   const { refresh } = useCloud();
   const { showToast } = useToast();
   const searchParams = useSearchParams();
@@ -37,8 +36,6 @@ function SettingsPageInner() {
   const showBuildPreferences = selfHosted;
   // Deploy defaults: only meaningful where the picker exists (desktop / self-hosted)
   const showDeployDefaults = selfHosted;
-  // Server connection (SSH / tunnel) only when self-hosted with local infra
-  const showServerConnection = selfHosted && authMode !== "cloud";
   // Cloud connection available for self-hosted instances (connect/disconnect)
   const showCloudConnection = selfHosted;
 
@@ -72,7 +69,6 @@ function SettingsPageInner() {
             <CloneCredentials />
             {showDeployDefaults && <DeployDefaults />}
             {showBuildPreferences && <BuildPreferences />}
-            {showServerConnection && <ServerConnection />}
             <InstanceInfo />
           </div>
 

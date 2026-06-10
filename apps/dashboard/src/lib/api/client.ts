@@ -103,6 +103,38 @@ export type RequestOptions = Omit<RequestInit, "body"> & {
   params?: Record<string, string | number | boolean | undefined>;
 };
 
+/* ------------------------------------------------------------------ */
+/*  In-flight request dedupe                                          */
+/* ------------------------------------------------------------------ */
+//
+// React 18 StrictMode double-fires every effect in dev, so a component
+// that calls `api.get(...)` in useEffect fires the request twice. The
+// same thing happens when N sibling components each mount and call
+// the same endpoint independently (e.g. /settings page has 3 cards
+// that each fetch settingsApi.get()).
+//
+// This dedupe layer collapses ANY concurrent GET requests with the
+// same URL+params into a single network call: the second caller gets
+// the same Promise the first is already awaiting. The entry is dropped
+// the moment the request settles (success or failure), so this never
+// caches results — it only collapses races.
+//
+// POST/PUT/PATCH/DELETE are NEVER deduped — they're side-effectful.
+//
+// The key uses method + URL with sorted params so `{a:1, b:2}` and
+// `{b:2, a:1}` collapse correctly.
+
+const inflightRequests = new Map<string, Promise<unknown>>();
+
+function buildInflightKey(method: string, url: URL): string {
+  // Stable sort of search params so order-permuted callers still collide.
+  const sorted = Array.from(url.searchParams.entries()).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  const search = sorted.map(([k, v]) => `${k}=${v}`).join("&");
+  return `${method} ${url.pathname}?${search}`;
+}
+
 /**
  * Low-level fetch wrapper - prefer the convenience methods below.
  */
@@ -120,6 +152,37 @@ async function request<T = unknown>(
     }
   }
 
+  /* --- In-flight dedupe (GET only) -------------------------------- */
+  // POST/PUT/PATCH/DELETE are side-effectful — never collapse them.
+  // Only deduping GETs avoids surprising consumers that issue back-to-
+  // back mutations.
+  const method = (init.method ?? "GET").toUpperCase();
+  if (method === "GET") {
+    const key = buildInflightKey(method, url);
+    const existing = inflightRequests.get(key);
+    if (existing) return existing as Promise<T>;
+    // We register the promise BEFORE awaiting it so racing callers in
+    // the same tick see it. The wrapping promise drops the entry on
+    // settle so the cache is never stale.
+    const promise = doFetch<T>(url, body, timeout, init);
+    inflightRequests.set(key, promise);
+    promise.finally(() => {
+      if (inflightRequests.get(key) === promise) {
+        inflightRequests.delete(key);
+      }
+    });
+    return promise;
+  }
+
+  return doFetch<T>(url, body, timeout, init);
+}
+
+async function doFetch<T>(
+  url: URL,
+  body: unknown,
+  timeout: number,
+  init: Omit<RequestOptions, "body" | "timeout" | "params">,
+): Promise<T> {
   /* --- Timeout ---------------------------------------------------- */
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);

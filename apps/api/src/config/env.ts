@@ -124,6 +124,57 @@ const envSchema = z.object({
     .enum(["true", "false", "1", "0", ""])
     .default("")
     .transform((v) => v === "true" || v === "1"),
+
+  /* ---------- Interactive terminal (xterm over WebSocket → ssh2 PTY) ---------- */
+  /**
+   * Idle timeout - kill a terminal session that goes this long without
+   * receiving any client input (stdin bytes). Defaults to 15 minutes.
+   * Bound at 1min minimum so an operator can't accidentally disable it.
+   */
+  TERMINAL_IDLE_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .default(15 * 60_000),
+  /**
+   * Hard cap - terminate a session after this absolute wall-clock duration
+   * regardless of activity. Defaults to 1 hour. Limits long-lived
+   * sessions from accumulating across operator forgetting to close tabs.
+   */
+  TERMINAL_HARD_CAP_MS: z.coerce.number().int().min(60_000).default(60 * 60_000),
+  /**
+   * Maximum concurrent terminal sessions per user across all servers.
+   * Enforced at handshake against the audit table (rows with endedAt IS
+   * NULL). Defaults to 3.
+   */
+  TERMINAL_MAX_SESSIONS_PER_USER: z.coerce.number().int().min(1).max(50).default(3),
+  /**
+   * TTL for the one-shot WS handshake ticket. The dashboard requests a
+   * ticket from a normal authenticated endpoint, then presents it in
+   * `Sec-WebSocket-Protocol` when opening the WS. Tickets are single-use
+   * and consumed by the WS server before the channel opens. Defaults to
+   * 30 seconds - long enough to survive a slow handshake, short enough
+   * that a leaked ticket has near-zero replay window.
+   */
+  TERMINAL_TICKET_TTL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
+  /**
+   * Per-session server-side scrollback buffer cap in bytes. Every PTY
+   * output chunk is appended to a ring buffer up to this size; older
+   * bytes are dropped from the head when over. On resume (page reload,
+   * tab swap, network blip), the WHOLE buffer is replayed to the new
+   * WebSocket BEFORE any live output flows — so the user sees the
+   * screen state as it was when they disconnected.
+   *
+   * Default 524288 bytes (512KB) ≈ 2000-3000 lines depending on width
+   * and ANSI density. Bound at 16KB minimum (replay would be pointless
+   * smaller) and 8MB maximum (memory budget per parked session).
+   */
+  TERMINAL_SCROLLBACK_BYTES: z.coerce
+    .number()
+    .int()
+    .min(16 * 1024)
+    .max(8 * 1024 * 1024)
+    .default(512 * 1024),
 });
 
 type ParsedEnv = z.infer<typeof envSchema>;
@@ -182,6 +233,29 @@ export const env: Env = {
 };
 
 validateProductionConfig(env, runtimeTarget);
+
+// ─── Self-hosted GitHub App creds are deprecated ────────────────────────────
+//
+// The GitHub App private key now lives exclusively in api.openship.io
+// (CLOUD_MODE=true). Self-hosted instances proxy all App-scoped operations
+// through cloud-client.ts. Setting these on a self-hosted instance has no
+// effect but suggests the operator hasn't seen the new flow — warn so they
+// know they can clean up their .env.
+if (!env.CLOUD_MODE) {
+  const stale = [
+    env.GITHUB_APP_ID && "GITHUB_APP_ID",
+    (env.GITHUB_PRIVATE_KEY || env.GITHUB_PRIVATE_KEY_BASE64) && "GITHUB_PRIVATE_KEY",
+    env.GITHUB_WEBHOOK_SECRET && "GITHUB_WEBHOOK_SECRET",
+    env.GITHUB_APP_SLUG && "GITHUB_APP_SLUG",
+  ].filter(Boolean);
+  if (stale.length > 0) {
+    console.warn(
+      `[env] Self-hosted instances no longer use local GitHub App credentials. ` +
+      `These env vars are ignored: ${stale.join(", ")}. ` +
+      `Connect to Openship Cloud in Settings to enable App-scoped GitHub access.`,
+    );
+  }
+}
 
 /** Parsed trusted origins - single source of truth for CORS + Better Auth */
 export const trustedOrigins = unique([

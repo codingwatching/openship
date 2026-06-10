@@ -264,6 +264,120 @@ export async function cloudPagesProxy(
   return res.json() as Promise<{ page: { slug: string; url?: string | null } }>;
 }
 
+// ─── GitHub App proxy (cloud holds the App private key) ─────────────────────
+//
+// Self-hosted instances never hold GITHUB_APP_ID / GITHUB_PRIVATE_KEY.
+// All App-scoped operations (install URL, list installations, mint install
+// tokens, OAuth identity) are proxied through api.openship.io which is the
+// sole holder of the App credentials. The local instance authenticates with
+// its cloud_session_token (same as every other cloud-proxied feature).
+//
+// What stays local on self-hosted:
+//   - per-project / per-user clone tokens (PATs) — full escape hatch
+//   - gh CLI fallback for offline / CI installs
+//   - the resolved access tokens minted by cloud (cached briefly in memory)
+//
+// What lives in the cloud:
+//   - the GitHub App identity, private key, webhook secret
+//   - the OAuth client_id/secret + user identity (login, avatar)
+//   - the canonical list of installations per cloud user
+//   - the JWT signer + access_token mint endpoint
+
+export interface CloudGithubInstallation {
+  id: number;
+  login: string;
+  avatarUrl: string;
+  type: "User" | "Organization";
+}
+
+export interface CloudGithubInstallationToken {
+  token: string;
+  /** ISO 8601 timestamp - GitHub install tokens expire in 60min. */
+  expiresAt: string;
+}
+
+export interface CloudGithubUserStatus {
+  connected: boolean;
+  login?: string;
+  avatarUrl?: string;
+  id?: number;
+}
+
+/** Returns the GitHub App install URL for this user, with a one-time `state`
+ *  the cloud will verify on the callback. The local instance opens this URL
+ *  in a popup and waits for the cloud to redirect back with `?code=...`. */
+export async function cloudGithubInstallUrl(
+  userId: string,
+): Promise<{ url: string; state: string } | null> {
+  const res = await cloudFetch(userId, "/api/cloud/github/install-url", {
+    method: "POST",
+  });
+  if (!res || !res.ok) return null;
+  const json = (await res.json()) as { data: { url: string; state: string } };
+  return json.data;
+}
+
+/** Exchange a post-install `code` (delivered to the local callback) for the
+ *  cloud user's newly-attached installations. Side effect on the cloud side
+ *  is none beyond recording the install — tokens are minted on demand later. */
+export async function cloudGithubExchangeCode(
+  userId: string,
+  code: string,
+  state: string,
+): Promise<{ installations: CloudGithubInstallation[] } | null> {
+  const res = await cloudFetch(userId, "/api/cloud/github/exchange-code", {
+    method: "POST",
+    body: JSON.stringify({ code, state }),
+  });
+  if (!res || !res.ok) return null;
+  const json = (await res.json()) as {
+    data: { installations: CloudGithubInstallation[] };
+  };
+  return json.data;
+}
+
+/** List the cloud user's GitHub App installations. Local caches results
+ *  briefly; canonical state lives in the cloud. */
+export async function cloudGithubInstallations(
+  userId: string,
+): Promise<CloudGithubInstallation[] | null> {
+  const res = await cloudFetch(userId, "/api/cloud/github/installations", {
+    method: "GET",
+  });
+  if (!res || !res.ok) return null;
+  const json = (await res.json()) as { data: CloudGithubInstallation[] };
+  return json.data;
+}
+
+/** Mint a short-lived installation access token for cloning the given owner.
+ *  Cloud signs the JWT with its private key, hits GitHub, and returns the
+ *  token to the local instance which uses it directly against github.com. */
+export async function cloudGithubInstallationToken(
+  userId: string,
+  input: { installationId?: number; owner: string; repos?: string[] },
+): Promise<CloudGithubInstallationToken | null> {
+  const res = await cloudFetch(userId, "/api/cloud/github/installation-token", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!res || !res.ok) return null;
+  const json = (await res.json()) as { data: CloudGithubInstallationToken };
+  return json.data;
+}
+
+/** Cloud-issued OAuth identity for this user (login + avatar). Used by the
+ *  dashboard to render "@user" badges on the GitHub settings panel. */
+export async function cloudGithubUserStatus(
+  userId: string,
+): Promise<CloudGithubUserStatus | null> {
+  const res = await cloudFetch(userId, "/api/cloud/github/user-status", {
+    method: "GET",
+  });
+  if (!res || !res.ok) return null;
+  const json = (await res.json()) as { data: CloudGithubUserStatus };
+  return json.data;
+}
+
 // ─── Billing ─────────────────────────────────────────────────────────────────
 
 /**

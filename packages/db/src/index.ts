@@ -20,6 +20,7 @@ export {
   createSettingsRepo,
   createServerRepo,
   createAnalyticsRepo,
+  createTerminalSessionRepo,
   type User,
   type NewUser,
   type Session,
@@ -50,6 +51,9 @@ export {
   type NewServerAnalytics,
   type ServerAnalyticsGeoRow,
   type NewServerAnalyticsGeo,
+  type TerminalSession,
+  type NewTerminalSession,
+  type TerminalExitReason,
 } from "./repos";
 
 // ─── Drizzle operators (re-exported for convenience) ─────────────────────────

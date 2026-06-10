@@ -8,3 +8,4 @@ export { userSettings, instanceSettings } from "./settings";
 export { servers } from "./servers";
 export { mailServers } from "./mail";
 export { serverAnalytics, serverAnalyticsGeo } from "./analytics";
+export { terminalSessions } from "./terminal-sessions";

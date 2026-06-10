@@ -61,11 +61,16 @@ export async function getStatus(c: Context) {
 export async function getHome(c: Context) {
   const userId = getUserId(c);
   const data = await githubService.getUserHome(userId);
-  const mode = githubAuth.getGitHubAuthMode();
+  // Per-user mode — picks "cloud-app" when self-hosted + cloud-connected.
+  // The install URL is the same github.com/apps/openship-io URL in both
+  // app-scoped modes; the state-bound URL is only used for the initial
+  // connect popup, not for the "Add account" link in the settings panel.
+  const mode = await githubAuth.resolveGitHubAuthMode(userId);
+  const isAppScoped = mode === "app" || mode === "cloud-app";
   return c.json({
     ...data,
     selfHosted: !env.CLOUD_MODE,
-    installUrl: mode === "app" ? githubAuth.getInstallUrl() : undefined,
+    installUrl: isAppScoped ? githubAuth.getInstallUrl() : undefined,
   });
 }
 
@@ -89,15 +94,87 @@ export async function getHome(c: Context) {
  */
 export async function connect(c: Context) {
   const userId = getUserId(c);
-  const mode = githubAuth.getGitHubAuthMode();
+  // Per-user resolution — picks "cloud-app" when self-hosted + cloud-
+  // connected, otherwise falls back to the static mode. Every branch
+  // below sees the actual mode this user should use.
+  const mode = await githubAuth.resolveGitHubAuthMode(userId);
+
+  // Optional `source` discriminator from the dashboard's dual-source
+  // (Openship App vs gh CLI) settings panel. When the user explicitly
+  // clicks "Connect Openship App", source="oauth" forces the App
+  // install flow regardless of whether gh CLI is already authenticated;
+  // otherwise the two buttons would be indistinguishable to the server
+  // and both would short-circuit on the cli token.
+  const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+  const source = body && typeof body === "object" && "source" in body
+    ? (body.source as "oauth" | "cli" | undefined)
+    : undefined;
+
+  // ── Cloud-app (self-hosted + cloud-connected) ────────────────────
+  // The local instance never holds App credentials. Connect = "go to
+  // openship.io and install / re-install the GitHub App". Cloud mints
+  // a one-time state token + install URL; the popup opens that URL,
+  // user approves on github.com, GitHub redirects to cloud's callback,
+  // cloud captures the new installation, then redirects back to the
+  // self-hosted /api/github/cloud-callback with the state. The local
+  // callback handler verifies state + finalizes via the cloud-client
+  // exchange endpoint.
+  if (mode === "cloud-app") {
+    const status = await githubAuth.getUserStatus(userId);
+    if (status.connected) {
+      const installations = await githubAuth.getUserInstallations(userId, status);
+      if (installations.length > 0 && source !== "oauth") {
+        return c.json({ connected: true });
+      }
+    }
+    const { url, state } = await githubAuth.resolveInstallUrl(userId);
+    return c.json({
+      connected: false,
+      flow: "redirect" as const,
+      url,
+      // Surface the state so the frontend can persist it for the
+      // callback exchange (alternative: persist server-side keyed by
+      // session — leaving client-side for v1 simplicity).
+      state,
+    });
+  }
+
   // Clicking Connect always means "I want to be connected" - clear any
   // prior cli-suppression flag from a previous Disconnect so the status
   // check below can resolve via the gh CLI fallback if it's available.
-  if (mode === "cli") {
+  // Skip this when the user explicitly chose the App source — we don't
+  // want to silently re-enable cli when they're trying to add the App.
+  if (mode === "cli" && source !== "oauth") {
     const { setGithubCliDisabled } = await import("../settings/settings.service");
     await setGithubCliDisabled(userId, false);
   }
   const status = await githubAuth.getUserStatus(userId);
+
+  // ── Explicit App-source request (overrides mode-based routing) ────
+  // In cli mode the dashboard shows TWO connect buttons (App + CLI).
+  // When the user clicked the App button, ALWAYS run the App install
+  // flow — return the install URL (and, if OAuth is missing, kick the
+  // OAuth-then-install dance via the redirect endpoint).
+  if (source === "oauth") {
+    if (!status.connected) {
+      // OAuth not present yet — the redirect endpoint will do
+      // linkSocialAccount then callbackURL=/auth/callback/install
+      // which redirects to the App install URL.
+      return c.json({
+        connected: false,
+        flow: "redirect" as const,
+      });
+    }
+    const installations = await githubAuth.getUserInstallations(userId, status);
+    if (installations.length > 0) {
+      return c.json({ connected: true });
+    }
+    return c.json({
+      connected: false,
+      flow: "redirect" as const,
+      url: githubAuth.getInstallUrl(),
+    });
+  }
 
   // ── Already connected? ─────────────────────────────────────
   if (mode === "token" && status.connected) {

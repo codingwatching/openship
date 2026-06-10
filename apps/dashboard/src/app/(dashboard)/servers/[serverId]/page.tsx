@@ -578,7 +578,13 @@ export default function ServerDetailPage({
               <RateLimitSettings serverId={serverId} />
             )}
 
-            {activeTab === "terminal" && <TerminalTab />}
+            {activeTab === "terminal" && (
+              <TerminalTab
+                serverId={serverId}
+                serverName={server?.name ?? undefined}
+                enabled={activeTab === "terminal"}
+              />
+            )}
           </div>
 
           {/* Right sidebar - offset to align with tab content below tab bar */}

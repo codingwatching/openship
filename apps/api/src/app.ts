@@ -86,6 +86,20 @@ if (env.CLOUD_MODE) {
   const { mailRoutes } = await import("./modules/mail");
   app.route("/api/mail", mailRoutes);
 
+  /**
+   * Interactive terminal (xterm.js ↔ WebSocket ↔ ssh2 PTY).
+   *
+   * The whole WebSocket subsystem (@hono/node-ws + the lib/ws wrapper)
+   * is dynamic-imported inside this branch so cloud-mode never loads
+   * any of it — the terminal feature is self-hosted-only and so is its
+   * transport plumbing. setupWebSocket(app) MUST run before
+   * terminal.routes (which calls upgradeWebSocket() at module load).
+   */
+  const { setupWebSocket } = await import("./lib/ws");
+  setupWebSocket(app);
+  const { terminalRoutes } = await import("./modules/terminal/terminal.routes");
+  app.route("/api/terminal", terminalRoutes);
+
   /** Cloud account management - connect/disconnect to Openship Cloud */
   const { cloudLocalRoutes } = await import("./modules/cloud/cloud-local.routes");
   app.route("/api/cloud", cloudLocalRoutes);

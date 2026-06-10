@@ -44,8 +44,8 @@ import { repos } from "@repo/db";
 import { AppError, type BuildStrategy } from "@repo/core";
 import { decrypt } from "../../lib/encryption";
 import {
-  getGitHubAuthMode,
   getInstallationToken,
+  resolveGitHubAuthMode,
   resolveToken,
 } from "./github.auth";
 
@@ -96,8 +96,12 @@ export async function resolveCloneToken(
     return { token: userToken, source: "user-global" };
   }
 
-  // ── Step 3: GitHub App installation token (App mode only) ──────────────
-  if (getGitHubAuthMode() === "app" && opts.owner) {
+  // ── Step 3: GitHub App installation token (App-scoped modes) ───────────
+  // "app" = local-signed (cloud-mode SaaS holds the App key)
+  // "cloud-app" = cloud-minted (self-hosted proxies through openship.io)
+  // In both, getInstallationToken returns a short-lived, repo-scoped token.
+  const mode = await resolveGitHubAuthMode(opts.userId);
+  if ((mode === "app" || mode === "cloud-app") && opts.owner) {
     const installationToken = await getInstallationToken(opts.userId, opts.owner).catch(
       () => null,
     );
@@ -144,7 +148,7 @@ export async function resolveBuildGitToken(opts: {
   buildStrategy: BuildStrategy;
 }): Promise<string | null> {
   const owner = opts.owner ?? undefined;
-  const mode = getGitHubAuthMode();
+  const mode = await resolveGitHubAuthMode(opts.userId);
 
   const result = await resolveCloneToken({
     projectId: opts.projectId,
@@ -156,7 +160,11 @@ export async function resolveBuildGitToken(opts: {
     return result.token;
   }
 
-  if (mode === "app") {
+  // App-scoped modes (local-signed or cloud-proxied) BOTH need to reject
+  // any broad-OAuth fallback for remote builds — that token would ride
+  // off to a worker and leak full repo-list scope. Only short-lived
+  // install tokens or user-supplied PATs are safe to ship.
+  if (mode === "app" || mode === "cloud-app") {
     if (
       result.source === "project" ||
       result.source === "user-global" ||

@@ -87,5 +87,25 @@ export type {
   WebmailTargetOption,
 } from "./mail";
 
+/* --- Interactive terminal ----------------------------------------- */
+export {
+  requestTerminalTicket,
+  buildTerminalWsUrl,
+  TERMINAL_SUBPROTOCOL_PREFIX,
+  TERMINAL_RESUME_SUBPROTOCOL_PREFIX,
+} from "./terminal";
+export type {
+  ServerControlMsg,
+  ClientControlMsg,
+  ReadyMsg,
+  ExitMsg,
+  ErrorMsg,
+  PongMsg,
+  ResizeMsg,
+  PingMsg,
+  TerminalErrorCode,
+  TerminalTicketResponse,
+} from "./terminal";
+
 /* --- Auth helpers -------------------------------------------------- */
 export { getAuthToken } from "./auth";

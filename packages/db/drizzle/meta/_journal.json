@@ -141,6 +141,13 @@
       "when": 1780028400000,
       "tag": "0019_mail_servers",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1780114800000,
+      "tag": "0020_terminal_sessions",
+      "breakpoints": true
     }
   ]
 }

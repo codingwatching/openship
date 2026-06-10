@@ -3,7 +3,13 @@ import { dirname } from "node:path";
 import { Transform } from "node:stream";
 
 import { getTarCreateEnv } from "../archive";
-import type { CommandExecutor, LogEntry, SshConfig } from "../types";
+import type {
+  CommandExecutor,
+  LogEntry,
+  ShellOptions,
+  ShellSession,
+  SshConfig,
+} from "../types";
 import { logEntry, sq } from "./local-shell";
 import {
   canUseRemoteRsync,
@@ -13,6 +19,13 @@ import {
 import type { Client as SshClient, SFTPWrapper } from "ssh2";
 import type { Readable, Duplex } from "node:stream";
 import { connectSshClient, openSftp, openSshUnixSocket, type StreamLocalCapableClient } from "./ssh-client";
+
+/** Clamp a window dimension to a sane range to avoid garbage values
+ *  reaching ssh2.Client.shell() / channel.setWindow(). */
+function clampWindow(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
 
 /**
  * Runs commands on a remote server via SSH.
@@ -257,6 +270,66 @@ export class SshExecutor implements CommandExecutor {
         });
       });
     })();
+  }
+
+  /**
+   * Open an interactive PTY shell on the remote host. The returned
+   * ShellSession wraps an ssh2 ClientChannel: writes go to stdin,
+   * stdout/stderr emit on the readable streams, setWindow forwards to
+   * channel.setWindow, close ends the channel. Lifetime is bound to the
+   * channel - the underlying ssh2.Client stays cached by sshManager, so
+   * callers must wrap with `sshManager.retain(serverId)` / `release()`
+   * to avoid the 5-minute idle drop on the parent connection.
+   */
+  async openShell(opts?: ShellOptions): Promise<ShellSession> {
+    const client = await this.connect();
+    const cols = clampWindow(opts?.cols, 80, 1, 1000);
+    const rows = clampWindow(opts?.rows, 24, 1, 500);
+    const term = opts?.term || "xterm-256color";
+
+    const channel = await new Promise<import("ssh2").ClientChannel>(
+      (resolve, reject) => {
+        client.shell(
+          { term, cols, rows, width: 0, height: 0, modes: {} },
+          (err, ch) => (err ? reject(err) : resolve(ch)),
+        );
+      },
+    );
+
+    const closeListeners: Array<(code: number | null, signal?: string) => void> = [];
+    let closed = false;
+    const fireClose = (code: number | null, signal?: string) => {
+      if (closed) return;
+      closed = true;
+      for (const cb of closeListeners) {
+        try { cb(code, signal); } catch { /* listener bug shouldn't kill cleanup */ }
+      }
+    };
+
+    // ssh2 emits 'exit' with the remote exit code (or signal), then
+    // 'close' once the channel teardown finishes. We fire on whichever
+    // arrives first and de-dup via the `closed` flag.
+    channel.on("exit", (code: number | null, signal?: string) => {
+      fireClose(code, signal);
+    });
+    channel.on("close", () => fireClose(null));
+    channel.on("error", () => fireClose(null));
+
+    return {
+      stdin: channel,
+      stdout: channel,
+      stderr: channel.stderr,
+      setWindow: (c: number, r: number) => {
+        const sc = clampWindow(c, 80, 1, 1000);
+        const sr = clampWindow(r, 24, 1, 500);
+        try { channel.setWindow(sr, sc, 0, 0); } catch { /* channel may be closing */ }
+      },
+      close: (_signal?: string) => {
+        try { channel.end(); } catch { /* already ending */ }
+        try { channel.close(); } catch { /* already closed */ }
+      },
+      onClose: (cb) => { closeListeners.push(cb); },
+    };
   }
 
   async forwardUnixSocket(socketPath: string): Promise<Duplex> {

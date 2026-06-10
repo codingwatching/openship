@@ -11,6 +11,7 @@ import {
   getUserInstallations,
   mapAccounts,
   getGitHubAuthMode,
+  resolveGitHubAuthMode,
 } from "./github.auth";
 import { getLocalGhStatus } from "./github.local-auth";
 import { isIgnoredRepoPath } from "../../lib/project-root-detector";
@@ -675,7 +676,10 @@ export async function listUserOrgsWithRepos(
  */
 export async function getUserHome(userId: string) {
   const status = await getUserStatus(userId);
-  const mode = getGitHubAuthMode();
+  // Per-user mode — picks "cloud-app" when self-hosted + cloud-connected.
+  // The dashboard renders different UI for cloud-app (single "managed by
+  // openship cloud" card) vs cli (dual-source App + CLI panel).
+  const mode = await resolveGitHubAuthMode(userId);
 
   // In cli mode, include local gh CLI status
   const localStatus = mode === "cli" ? await getLocalGhStatus() : undefined;
@@ -715,8 +719,12 @@ export async function getUserHome(userId: string) {
     return { status, repos: [] as MappedRepository[], accounts: [] as MappedAccount[], mode, localStatus, sources };
   }
 
-  if (mode !== "app") {
-    // Non-app modes: fetch repos via personal token (OAuth, CLI, or static)
+  // App-scoped modes (local-signed or cloud-proxied) both use the
+  // installations list. cloud-app's OAuth identity lives on the cloud
+  // side; the local instance has no /user OAuth token to call
+  // /user/repos with, so we MUST go through the installation path.
+  if (mode !== "app" && mode !== "cloud-app") {
+    // OAuth / CLI / static-token modes: fetch repos via personal token.
     let repos: MappedRepository[] = [];
     try {
       const data = await githubFetch<GitHubRepository[]>({
@@ -746,7 +754,9 @@ export async function getUserHome(userId: string) {
     return { status, repos, accounts, mode, localStatus, sources };
   }
 
-  // App mode: use GitHub App installations
+  // App-scoped path: use GitHub App installations for accounts + repos.
+  // In "app" mode (cloud SaaS / explicit env) JWT signing happens locally.
+  // In "cloud-app" mode all calls proxy through openship.io.
   let accounts: MappedAccount[] = [];
   let repos: MappedRepository[] = [];
 

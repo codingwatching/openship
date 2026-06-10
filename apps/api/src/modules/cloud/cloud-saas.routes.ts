@@ -28,3 +28,13 @@ cloudSaasRoutes.post("/analytics", saas.analyticsProxy);
 
 cloudSaasRoutes.use("/pages", cloudSessionAuth);
 cloudSaasRoutes.post("/pages", saas.pagesProxy);
+
+// ─── GitHub App proxy (cloud holds the App private key) ───────────────────
+// All endpoints below are what self-hosted instances call via cloud-client.
+// Cloud signs JWTs / mints install tokens; local never holds App creds.
+cloudSaasRoutes.use("/github/*", cloudSessionAuth);
+cloudSaasRoutes.post("/github/install-url", saas.githubInstallUrl);
+cloudSaasRoutes.post("/github/exchange-code", saas.githubExchangeCode);
+cloudSaasRoutes.get("/github/installations", saas.githubInstallations);
+cloudSaasRoutes.post("/github/installation-token", saas.githubInstallationToken);
+cloudSaasRoutes.get("/github/user-status", saas.githubUserStatus);

@@ -143,13 +143,43 @@ export async function getInstallationId(
 
 /**
  * Get an installation access token (scoped to the installed repos).
+ *
  * Tokens are cached for 50 minutes (GitHub tokens expire after 60).
+ *
+ * Path branches on the user's resolved auth mode:
+ *   - "app"       → local JWT signing + api.github.com call (cloud-mode only)
+ *   - "cloud-app" → cloud-client proxy to api.openship.io
+ *
+ * Other modes (cli/oauth/token) don't use installation tokens.
  */
 export async function getInstallationToken(
   userId: string,
   owner: string,
   installationId?: number,
 ): Promise<string | null> {
+  const mode = await resolveGitHubAuthMode(userId);
+
+  if (mode === "cloud-app") {
+    // Proxy through cloud. The cloud-client doesn't take installationId
+    // strictly — cloud can look it up by owner. We still pass it when
+    // known to skip a lookup hop.
+    const cacheKey = `instToken:cloud:${userId}:${owner}`;
+    const cached = tokenCache.get(cacheKey);
+    if (cached) return cached;
+
+    const { cloudGithubInstallationToken } = await import("../../lib/cloud-client");
+    const minted = await cloudGithubInstallationToken(userId, {
+      installationId,
+      owner,
+    });
+    if (!minted?.token) return null;
+    // Cache for 50min; cloud caches similarly so this is mostly belt-
+    // and-suspenders against repeated requests in tight loops.
+    tokenCache.set(cacheKey, minted.token, 50 * 60);
+    return minted.token;
+  }
+
+  // Local-mint path (cloud-mode SaaS, or explicit GITHUB_AUTH_MODE=app).
   if (!installationId) {
     installationId = (await getInstallationId(userId, owner)) ?? undefined;
   }
@@ -206,14 +236,17 @@ export interface TokenOptions {
 /**
  * Resolve the best available token for a GitHub API request.
  *
- * Dispatches by GITHUB_AUTH_MODE:
- *   - "app"   → installation token → user OAuth fallback
- *   - "oauth" → user OAuth token only
- *   - "cli"   → user OAuth → gh CLI fallback
- *   - "token" → static GITHUB_TOKEN env var
+ * Dispatches by per-user resolved auth mode:
+ *   - "app"       → local-signed installation token → user OAuth fallback
+ *                   (cloud-mode only — this IS api.openship.io)
+ *   - "cloud-app" → cloud-minted installation token → no fallback
+ *                   (self-hosted + cloud-connected — App creds live in cloud)
+ *   - "oauth"     → user OAuth token only
+ *   - "cli"       → user OAuth → gh CLI fallback
+ *   - "token"     → static GITHUB_TOKEN env var
  */
 export async function resolveToken(opts: TokenOptions): Promise<string | null> {
-  const mode = getGitHubAuthMode();
+  const mode = await resolveGitHubAuthMode(opts.userId);
 
   switch (mode) {
     case "token":
@@ -226,6 +259,20 @@ export async function resolveToken(opts: TokenOptions): Promise<string | null> {
         if (instToken) return instToken;
       }
       return getUserToken(opts.userId);
+    }
+
+    case "cloud-app": {
+      // Self-hosted: no App credentials locally. Proxy through cloud
+      // for an installation token. No OAuth fallback — cloud owns the
+      // OAuth identity too; if the cloud session is dead, treat as
+      // not connected and let the caller surface the right error.
+      if (!opts.owner) return null;
+      const { cloudGithubInstallationToken } = await import("../../lib/cloud-client");
+      const minted = await cloudGithubInstallationToken(opts.userId, {
+        installationId: opts.installationId,
+        owner: opts.owner,
+      });
+      return minted?.token ?? null;
     }
 
     case "oauth":
@@ -316,13 +363,32 @@ export async function githubFetch<T = unknown>(opts: GitHubFetchOptions): Promis
 /**
  * Check if the user is connected to GitHub and return their profile.
  *
- * Token source depends on GITHUB_AUTH_MODE:
- *   - "app" / "oauth" → user OAuth token
+ * Path branches on the per-user resolved auth mode:
+ *   - "cloud-app" → cloud-client proxy (cloud owns the OAuth identity)
+ *   - "app" / "oauth" → user OAuth token (local Better-Auth)
  *   - "cli"           → OAuth first, then gh CLI fallback
  *   - "token"         → static GITHUB_TOKEN env var
  */
 export async function getUserStatus(userId: string) {
-  const mode = getGitHubAuthMode();
+  const mode = await resolveGitHubAuthMode(userId);
+
+  // ── Cloud-app: status comes from openship.io ────────────────────────────
+  if (mode === "cloud-app") {
+    const { cloudGithubUserStatus } = await import("../../lib/cloud-client");
+    const status = await cloudGithubUserStatus(userId);
+    if (!status?.connected) {
+      return { connected: false as const, tokenSource: null };
+    }
+    return {
+      connected: true as const,
+      tokenSource: "cloud-app" as GitHubAuthMode,
+      oauthConnected: true as const,
+      login: status.login ?? "",
+      id: status.id ?? 0,
+      avatar_url: status.avatarUrl ?? "",
+    };
+  }
+
   let token: string | null = null;
   let tokenSource: GitHubAuthMode = mode;
 
@@ -373,13 +439,38 @@ export async function getUserStatus(userId: string) {
 
 /**
  * Get all GitHub App installations that the user has access to.
- * Requires an active user OAuth token. When the live GitHub lookup fails after
- * OAuth was validated, we can use the stored app-install snapshot as a fallback.
+ *
+ * Path branches on per-user mode:
+ *   - "cloud-app" → cloud-client proxy. Cloud owns the canonical list.
+ *   - others      → user OAuth token + GitHub /user/installations call,
+ *                   with local DB sync. Stored snapshot is the fallback
+ *                   when the live lookup fails after OAuth was validated.
  */
 export async function getUserInstallations(
   userId: string,
   status?: { connected: boolean; id?: number },
 ): Promise<GitHubInstallation[]> {
+  const mode = await resolveGitHubAuthMode(userId);
+
+  if (mode === "cloud-app") {
+    const { cloudGithubInstallations } = await import("../../lib/cloud-client");
+    const list = await cloudGithubInstallations(userId);
+    if (!list) return [];
+    return list.map((entry) => ({
+      id: entry.id,
+      account: {
+        login: entry.login,
+        id: 0,
+        avatar_url: entry.avatarUrl,
+        type: entry.type,
+      },
+      app_id: 0,
+      target_type: entry.type,
+      permissions: {},
+      events: [],
+    }));
+  }
+
   const token = await getUserToken(userId);
   if (!token) return [];
 
@@ -462,39 +553,96 @@ export function mapAccounts(installations: GitHubInstallation[]): MappedAccount[
 
 // ─── GitHub auth mode ─────────────────────────────────────────────────────
 
-export type GitHubAuthMode = "app" | "oauth" | "cli" | "token";
+export type GitHubAuthMode = "app" | "oauth" | "cli" | "token" | "cloud-app";
 
 /**
- * Resolve the effective GitHub auth mode.
+ * Resolve the effective GitHub auth mode (SYNC — caller has no userId).
  *
- * If `GITHUB_AUTH_MODE=auto` (default), inferred from CLOUD_MODE:
- *   - CLOUD_MODE=true  → "app"  (GitHub App installation tokens)
- *   - CLOUD_MODE=false → "cli"  (gh CLI / device flow)
+ * Used by code paths that need a mode without a user context (e.g. boot-
+ * time checks, batch jobs). Returns the LOCAL-only resolution:
+ *   - CLOUD_MODE=true  → "app"  (this IS api.openship.io — holds App creds)
+ *   - CLOUD_MODE=false → "cli"  (defaults to local gh CLI for offline use)
  *
- * DEPLOY_MODE is intentionally not checked here - a local dashboard
- * deploying to Oblien (DEPLOY_MODE=cloud) should still use CLI auth.
- *
- * Explicit values ("app", "oauth", "cli", "token") are used as-is.
+ * Per-user requests should call `resolveGitHubAuthMode(userId)` instead
+ * — that one returns `"cloud-app"` when the user is connected to openship
+ * cloud, which is the canonical self-hosted path.
  */
 export function getGitHubAuthMode(): GitHubAuthMode {
   const explicit = env.GITHUB_AUTH_MODE;
-  if (explicit !== "auto") return explicit;
+  if (explicit !== "auto") return explicit as GitHubAuthMode;
 
   if (env.CLOUD_MODE) return "app";
   return "cli";
 }
 
-/** Shorthand - true when the resolved auth mode is "app" (GitHub App). */
+/**
+ * Per-user mode resolution (ASYNC).
+ *
+ * The canonical answer for any request that has a userId. Resolution:
+ *
+ *   1. Explicit `GITHUB_AUTH_MODE` env var → used as-is (escape hatch).
+ *   2. `CLOUD_MODE=true` (this IS api.openship.io) → "app".
+ *   3. Self-hosted + the user is connected to Openship Cloud → "cloud-app".
+ *      All App-scoped operations (install URL, list installations, mint
+ *      install token, OAuth identity) proxy through api.openship.io.
+ *   4. Self-hosted + NOT cloud-connected → "cli" (the gh CLI / PAT
+ *      escape hatch — no App-scoped features available).
+ */
+export async function resolveGitHubAuthMode(userId: string): Promise<GitHubAuthMode> {
+  const explicit = env.GITHUB_AUTH_MODE;
+  if (explicit !== "auto") return explicit as GitHubAuthMode;
+
+  if (env.CLOUD_MODE) return "app";
+
+  // Self-hosted: check cloud connection per user.
+  try {
+    const { isCloudConnected } = await import("../../lib/cloud-client");
+    if (await isCloudConnected(userId)) return "cloud-app";
+  } catch {
+    // If the cloud-client import / DB read fails, fall through to cli.
+  }
+  return "cli";
+}
+
+/** Shorthand - true when the resolved auth mode is "app" or "cloud-app"
+ *  (i.e. any GitHub App-scoped flow, whether locally signed or proxied). */
 export function isCloudMode(): boolean {
-  return getGitHubAuthMode() === "app";
+  const mode = getGitHubAuthMode();
+  return mode === "app" || mode === "cloud-app";
 }
 
 /**
- * Get the GitHub App installation URL (cloud mode).
+ * Get the GitHub App installation URL (sync, local-only).
+ *
+ * Used when this process IS the App owner — i.e. cloud-mode SaaS or an
+ * explicit GITHUB_AUTH_MODE=app self-host with creds set. For the
+ * canonical self-hosted path (cloud-app), use `resolveInstallUrl(userId)`
+ * which proxies through openship.io and returns a state-bound URL.
  */
 export function getInstallUrl(): string {
   const appSlug = env.GITHUB_APP_SLUG ?? "openship-io";
   return `https://github.com/apps/${appSlug}/installations/new`;
+}
+
+/**
+ * Per-user install URL resolution. In cloud-app mode this round-trips
+ * through openship.io to get a state-bound URL; otherwise returns the
+ * sync `getInstallUrl()` result. `state` is empty string when not
+ * applicable (local-app mode).
+ */
+export async function resolveInstallUrl(
+  userId: string,
+): Promise<{ url: string; state: string }> {
+  const mode = await resolveGitHubAuthMode(userId);
+  if (mode === "cloud-app") {
+    const { cloudGithubInstallUrl } = await import("../../lib/cloud-client");
+    const res = await cloudGithubInstallUrl(userId);
+    if (res) return res;
+    // Cloud unreachable — fall back to the canonical install URL with no
+    // state. The exchange will fail later if the user actually installs,
+    // but at least they can SEE the install screen.
+  }
+  return { url: getInstallUrl(), state: "" };
 }
 
 /**

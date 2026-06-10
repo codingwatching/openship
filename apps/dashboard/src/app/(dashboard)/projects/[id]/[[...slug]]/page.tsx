@@ -548,31 +548,62 @@ const ProjectSettingsContent = () => {
   }
 
   if (isLoadingProjectInfo) {
+    // Mirror the post-load shell (header + two-column grid) so the
+    // page doesn't jump when data lands. The right column gets its
+    // own placeholder card to reserve the 340px track.
     return (
-      <PageContainer fullScreen={false}>
-        <div className="space-y-5 py-6">
-          {/* Skeleton cards */}
-          <div className="bg-card rounded-2xl border border-border/50 p-6 animate-pulse">
-            <div className="h-5 w-48 bg-muted rounded-lg mb-2" />
-            <div className="h-4 w-32 bg-muted/60 rounded-lg" />
+      <PageContainer>
+        <div className="mb-6">
+          <div className="flex items-center space-x-2 text-sm text-muted-foreground mb-2">
+            <div className="h-3 w-20 bg-muted/60 rounded animate-pulse" />
+            <span>/</span>
+            <div className="h-3 w-32 bg-muted/60 rounded animate-pulse" />
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-            {[1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className="bg-card rounded-2xl border border-border/50 p-5 animate-pulse"
-              >
-                <div className="h-3 w-20 bg-muted rounded mb-4" />
-                <div className="space-y-3">
-                  {[1, 2, 3, 4].map((j) => (
-                    <div key={j} className="flex justify-between">
-                      <div className="h-3 w-16 bg-muted/60 rounded" />
-                      <div className="h-3 w-24 bg-muted/60 rounded" />
-                    </div>
-                  ))}
+          <div className="flex items-center justify-between gap-4">
+            <div className="h-7 w-40 bg-muted rounded animate-pulse" />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6">
+          {/* ── LEFT COLUMN skeleton ── */}
+          <div className="space-y-5 min-w-0">
+            <div className="bg-card rounded-2xl border border-border/50 p-6 animate-pulse">
+              <div className="h-5 w-48 bg-muted rounded-lg mb-2" />
+              <div className="h-4 w-32 bg-muted/60 rounded-lg" />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+              {[1, 2, 3].map((i) => (
+                <div
+                  key={i}
+                  className="bg-card rounded-2xl border border-border/50 p-5 animate-pulse"
+                >
+                  <div className="h-3 w-20 bg-muted rounded mb-4" />
+                  <div className="space-y-3">
+                    {[1, 2, 3, 4].map((j) => (
+                      <div key={j} className="flex justify-between">
+                        <div className="h-3 w-16 bg-muted/60 rounded" />
+                        <div className="h-3 w-24 bg-muted/60 rounded" />
+                      </div>
+                    ))}
+                  </div>
                 </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ── RIGHT COLUMN skeleton ── */}
+          <div className="hidden lg:block">
+            <div className="space-y-4 lg:sticky lg:top-6 lg:self-start">
+              <div className="bg-card rounded-2xl border border-border/50 p-5 animate-pulse">
+                <div className="h-3 w-16 bg-muted/60 rounded mb-3" />
+                <div className="h-5 w-40 bg-muted rounded" />
               </div>
-            ))}
+              <div className="bg-card rounded-2xl border border-border/50 p-3 space-y-1 animate-pulse">
+                {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                  <div key={i} className="h-9 w-full bg-muted/40 rounded-lg" />
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       </PageContainer>
