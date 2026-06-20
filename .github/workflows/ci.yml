@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock', '**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck apps/api
+        run: bun run --cwd apps/api lint
+
+      - name: Typecheck apps/dashboard
+        working-directory: apps/dashboard
+        run: |
+          set -o pipefail
+          # fumadocs has pre-existing type errors that are filtered out;
+          # any other error causes the step to fail via the exit code below.
+          npx tsc --noEmit 2>&1 | tee tsc.log | grep -v fumadocs || true
+          if grep -v fumadocs tsc.log | grep -E '^(.*): error TS' > /dev/null; then
+            echo "Typecheck failed (non-fumadocs errors above)"
+            exit 1
+          fi

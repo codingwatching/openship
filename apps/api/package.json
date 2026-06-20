@@ -7,6 +7,7 @@
     "dev": "node --import tsx scripts/dev.ts local",
     "dev:saas": "node --import tsx scripts/dev.ts saas",
     "build": "tsup src/index.ts --format esm --dts",
+    "build-release": "bun scripts/build-release.ts",
     "start": "node dist/index.js",
     "lint": "tsc --noEmit",
     "test": "vitest run",

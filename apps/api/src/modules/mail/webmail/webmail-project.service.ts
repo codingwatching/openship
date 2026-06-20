@@ -22,13 +22,16 @@
  * target" flow is gone too - it OOM-killed small VPSes during the Vite
  * SSR pass; pre-building avoids that entirely.
  */
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { repos, type Project } from "@repo/db";
 import { safeErrorMessage } from "@repo/core";
 import { sshManager } from "../../../lib/ssh-manager";
 import { assertResourceInOrg } from "../../../lib/controller-helpers";
+import { fetchAndExtractRelease } from "../../system/migration/lib/release-download";
 import {
   buildConfigSnapshot,
   createQueuedDeployment,
@@ -64,40 +67,139 @@ const REMOTE_SQLITE_PATH = `${REMOTE_PERSIST_DIR}/zero.db`;
 /** Internal port Zero binds to behind the OpenResty vhost the pipeline creates. */
 const DEFAULT_INTERNAL_PORT = 4080;
 
-/** Where on the API host the webmail repo lives. Overridable for tests. */
-function resolveWebmailRepoDir(): string {
-  if (process.env.MAIL_WEBMAIL_SOURCE_DIR) {
-    return process.env.MAIL_WEBMAIL_SOURCE_DIR;
+/** GitHub repo for release downloads. Same repo as openship - mono-version. */
+const RELEASE_REPO = "oblien/openship";
+
+/**
+ * apps/api/ directory, used to find the root package.json (for version)
+ * and the repo-local `apps/email/dist/` dev path.
+ *
+ * This file lives at apps/api/src/modules/mail/webmail/webmail-project.service.ts,
+ * so 4 levels up reaches apps/api/. Mirrors the ESM-safe pattern in
+ * openship-dist.ts.
+ */
+const __dirname = (() => {
+  try {
+    return resolve(fileURLToPath(import.meta.url), "..");
+  } catch {
+    // CJS fallback (tests, scripts) - walk back up from cwd.
+    return resolve(process.cwd(), "apps/api/src/modules/mail/webmail");
   }
-  return resolve(process.cwd(), "../../apps/email");
+})();
+const API_ROOT = resolve(__dirname, "../../../..");
+
+/**
+ * Read the API's own version from package.json. Embedded at first call
+ * and cached. We use the API version as the openship release tag because
+ * the email/webmail release ships at the SAME tag as the rest of openship
+ * (mono-version).
+ */
+let cachedVersion: string | undefined;
+function readApiVersion(): string {
+  if (cachedVersion) return cachedVersion;
+  const pkgPath = join(API_ROOT, "package.json");
+  try {
+    const raw = readFileSync(pkgPath, "utf-8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    if (typeof parsed.version === "string" && parsed.version.length > 0) {
+      cachedVersion = parsed.version;
+      return cachedVersion;
+    }
+    throw new Error(`package.json at ${pkgPath} has no version field`);
+  } catch (err) {
+    throw new Error(
+      `Cannot read Openship API version from ${pkgPath}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/** Root for downloaded release caches. Mirrors openship-dist.ts. */
+function computeDataDir(): string {
+  return process.env.OPENSHIP_DATA_DIR ?? join(homedir(), ".openship");
+}
+
+/** Repo-local dev path produced by `bun run build` in apps/email/. */
+function computeRepoLocalEmailDistPath(): string {
+  // apps/api/ → ../email/dist
+  return resolve(API_ROOT, "..", "email", "dist");
+}
+
+export class WebmailReleaseDistMissingError extends Error {
+  readonly code = "WEBMAIL_RELEASE_DIST_MISSING" as const;
+  constructor(distPath: string, options?: { cause?: unknown }) {
+    super(
+      `Webmail release dist not found at ${distPath}. ` +
+        `Build it first: \`cd apps/email && bun run build\`, ` +
+        `or set MAIL_WEBMAIL_SOURCE_DIR to point at an existing apps/email/ checkout ` +
+        `whose dist/ directory has been built.`,
+      options,
+    );
+    this.name = "WebmailReleaseDistMissingError";
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
- * Resolve the path to the pre-built webmail dist on the API host.
+ * Resolve the path to the pre-built webmail dist on the API host using
+ * the three-slot resolution order (mirrors openship-dist.ts):
  *
- * The dist is produced ONCE, ahead of deploy, by running:
- *
- *     cd apps/email && bun run build
+ *   1. MAIL_WEBMAIL_SOURCE_DIR env override (highest priority). Points at
+ *      an apps/email/ checkout whose `dist/` has been built. For Docker
+ *      images, custom CI bundles, air-gapped installs, tests.
+ *   2. <repoRoot>/apps/email/dist/ - the dev path produced by
+ *      `cd apps/email && bun run build`.
+ *   3. <dataDir>/email-dist/v<version>/ - production cache. On a miss,
+ *      downloads the matching GitHub release tarball and extracts it
+ *      here. `<dataDir>` is OPENSHIP_DATA_DIR or ~/.openship. The tag
+ *      matches the API version (mono-version with openship-dist).
  *
  * The client reads its backend URL from `window.location.origin` at
  * runtime, so one dist deploys to any hostname unchanged - no env
  * required at build time.
  *
- * Deploys NEVER run that build - they only tar-ship whatever is currently
- * at `apps/email/dist/`. If the dir is missing the deploy fails fast so
- * the operator knows to build first.
+ * If all three slots fail, throws WebmailReleaseDistMissingError. The
+ * download error (if any) is attached as the `cause` so the operator
+ * sees both the network failure and the env-override escape hatch.
+ *
+ * Note: async because the cache-miss path performs a network download.
+ * The env-override and repo-local-hit branches are still effectively
+ * synchronous (they return on the same microtask tick).
  */
-function resolveWebmailDistDir(): string {
-  const dir = resolve(resolveWebmailRepoDir(), "dist");
-  if (!existsSync(dir)) {
-    throw new Error(
-      `Webmail release dist not found at ${dir}. ` +
-        `Build it first: cd apps/email && bun run build`,
-    );
+async function resolveWebmailDistDir(): Promise<string> {
+  // Slot 1: explicit env override. Points at an apps/email/ checkout;
+  // mirror the previous behavior of joining `dist` underneath it.
+  const override = process.env.MAIL_WEBMAIL_SOURCE_DIR;
+  if (override) {
+    const dir = resolve(override, "dist");
+    if (existsSync(dir)) return dir;
+    throw new WebmailReleaseDistMissingError(dir);
   }
-  return dir;
+
+  // Slot 2: repo-local dev path.
+  const repoLocal = computeRepoLocalEmailDistPath();
+  if (existsSync(repoLocal)) return repoLocal;
+
+  // Slot 3: <dataDir>/email-dist/v<version>/ - download on miss.
+  const version = readApiVersion();
+  const tag = `v${version}`;
+  const cacheDir = join(computeDataDir(), "email-dist");
+  const cachedTarget = join(cacheDir, tag);
+  if (existsSync(cachedTarget)) return cachedTarget;
+
+  try {
+    const result = await fetchAndExtractRelease({
+      repo: RELEASE_REPO,
+      asset: `openship-email-${tag}-linux-amd64.tar.gz`,
+      tag,
+      cacheDir,
+    });
+    return result.path;
+  } catch (err) {
+    throw new WebmailReleaseDistMissingError(cachedTarget, { cause: err });
+  }
 }
 
 function deriveAcmeEmail(hostname: string): string {
@@ -505,9 +607,10 @@ export async function startWebmailDeploy(
 
   // ── 1. Locate the pre-built webmail dist on the API host. NO build
   //       runs here - the dist must already exist (operator runs
-  //       `bun run build` in apps/email/ ahead of time). If it doesn't,
-  //       fail fast with a clear "build first" message. ───────────────
-  const releaseDistPath = resolveWebmailDistDir();
+  //       `bun run build` in apps/email/ ahead of time, OR we download
+  //       the matching release tarball from GitHub into the cache).
+  //       If all three slots fail, fail fast with a clear message. ────
+  const releaseDistPath = await resolveWebmailDistDir();
 
   // ── 2. Project row carries localPath (the dist) + fixed config ──────
   const { project, projectId } = await ensureWebmailProject(

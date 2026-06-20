@@ -88,7 +88,7 @@ export interface EnsureOpenshipProjectResult {
 export async function ensureOpenshipProject(
   organizationId: string,
 ): Promise<EnsureOpenshipProjectResult> {
-  const releaseDistPath = resolveOpenshipDistDir();
+  const releaseDistPath = await resolveOpenshipDistDir();
   const slug = openshipDeploySlug(organizationId);
 
   // ProjectApp + Project rows scoped to the migrating org. Mirror the
