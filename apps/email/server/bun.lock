@@ -18,7 +18,7 @@
         "mime-types": "3.0.1",
         "mimetext": "^3.0.27",
         "nanoid": "^5.0.9",
-        "nodemailer": "^6.9.16",
+        "nodemailer": "^9.0.1",
         "sanitize-html": "^2.16.0",
         "string-strip-html": "^13.4.12",
         "superjson": "^2.2.2",
@@ -29,7 +29,7 @@
         "@types/mailparser": "^3.4.6",
         "@types/mime-types": "^2.1.4",
         "@types/node": "^22.9.0",
-        "@types/nodemailer": "^6.4.17",
+        "@types/nodemailer": "^8.0.1",
         "@types/sanitize-html": "2.13.0",
         "drizzle-kit": "^0.31.9",
         "typescript": "^5.9.3",
@@ -121,7 +121,7 @@
 
     "@types/node": ["@types/node@22.19.19", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-dyh/xO2Fh5bYrfWaaqGrRQQGkNdmYw6AmaAUvYeUMNTWQtvb796ikLdmTchRmOlOiIJ1TDXfWgVx1QkUlQ6Hew=="],
 
-    "@types/nodemailer": ["@types/nodemailer@6.4.23", "", { "dependencies": { "@types/node": "*" } }, "sha512-aFV3/NsYFLSx9mbb5gtirBSXJnAlrusoKNuPbxsASWc7vrKLmIrTQRpdcxNcSFL3VW2A2XpeLEavwb2qMi6nlQ=="],
+    "@types/nodemailer": ["@types/nodemailer@8.0.1", "", { "dependencies": { "@types/node": "*" } }, "sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw=="],
 
     "@types/sanitize-html": ["@types/sanitize-html@2.13.0", "", { "dependencies": { "htmlparser2": "^8.0.0" } }, "sha512-X31WxbvW9TjIhZZNyNBZ/p5ax4ti7qsNDBDEnH4zAgmEh35YnFD1UiS6z9Cd34kKm0LslFW0KPmTQzu/oGtsqQ=="],
 
@@ -231,7 +231,7 @@
 
     "nanoid": ["nanoid@5.1.11", "", { "bin": { "nanoid": "bin/nanoid.js" } }, "sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg=="],
 
-    "nodemailer": ["nodemailer@6.10.1", "", {}, "sha512-Z+iLaBGVaSjbIzQ4pX6XV41HrooLsQ10ZWPUehGmuantvzWoDVBnmsdUcOIDM1t+yPor5pDhVlDESgOMEGxhHA=="],
+    "nodemailer": ["nodemailer@9.0.1", "", {}, "sha512-Gwv8SQewT616ZM/URn0H54b8PWo/Wum7md3EW2aWy1lO27+WZCX+Xyak3J+NlmHUjDh5ME+uesJUDRbR3Ye8Bw=="],
 
     "nth-check": ["nth-check@2.1.1", "", { "dependencies": { "boolbase": "^1.0.0" } }, "sha512-lqjrjmaOoAnWfMmBPL+XNnynZh2+swxiX3WUE0s4yEHI6m+AwrK2UZOimIRl3X/4QctVqS8AiZjFqyOGrMXb/w=="],
 

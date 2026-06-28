@@ -31,7 +31,7 @@
     "mime-types": "3.0.1",
     "mimetext": "^3.0.27",
     "nanoid": "^5.0.9",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^9.0.1",
     "sanitize-html": "^2.16.0",
     "string-strip-html": "^13.4.12",
     "superjson": "^2.2.2",
@@ -42,7 +42,7 @@
     "@types/mailparser": "^3.4.6",
     "@types/mime-types": "^2.1.4",
     "@types/node": "^22.9.0",
-    "@types/nodemailer": "^6.4.17",
+    "@types/nodemailer": "^8.0.1",
     "@types/sanitize-html": "2.13.0",
     "drizzle-kit": "^0.31.9",
     "typescript": "^5.9.3"
