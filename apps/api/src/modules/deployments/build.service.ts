@@ -41,6 +41,7 @@ import { encrypt } from "../../lib/encryption";
 import { getLatestCommit, getRepository } from "../github/github.service";
 import { assertGitHubRepoAccess } from "../github/github-access";
 import { resolveSmartRoute } from "./smart-route";
+import { resolveProjectInfo } from "./prepare.service";
 import { type RequestContext } from "../../lib/request-context";
 import * as sessionManager from "./session-manager";
 import {
@@ -298,6 +299,53 @@ async function resolveProjectBranch(ctx: RequestContext, project: Project, branc
   }
 
   return "main";
+}
+
+/**
+ * Re-parse the repo's current docker-compose and 3-way reconcile it against the
+ * stored service rows (repos.service.reconcileFromCompose): services the user
+ * hasn't edited auto-update to the repo; edited services are preserved and flagged
+ * (`driftSpec`) for review. Best-effort — a repo/parse failure, a non-compose or
+ * local-source project, or an empty parse leaves the rows untouched and NEVER
+ * blocks the deploy. GitHub-source compose projects only.
+ *
+ * `changedPaths` (webhook only) is an optimization: when we have a definite,
+ * non-empty changed-file list that does NOT include a compose file, skip the
+ * repo scan entirely — the compose can't have changed. When it's absent (manual
+ * redeploy) or empty, reconcile runs to be safe.
+ */
+const COMPOSE_PATH_RE = /(^|\/)(docker-compose|compose)\.ya?ml$/i;
+async function reconcileComposeDrift(
+  ctx: RequestContext,
+  project: Project,
+  branch: string,
+  changedPaths?: string[] | null,
+) {
+  try {
+    if (!project.gitOwner || !project.gitRepo) return; // local/no-git source → nothing to re-parse
+    if (changedPaths && changedPaths.length > 0 && !changedPaths.some((p) => COMPOSE_PATH_RE.test(p))) {
+      return; // this push didn't touch the compose file → no drift possible
+    }
+    const composeRows = await listProjectComposeServices(project.id);
+    if (!composeRows.some((s) => s.kind === "compose")) return; // not a compose project
+    const info = await resolveProjectInfo({
+      source: "github",
+      owner: project.gitOwner,
+      repo: project.gitRepo,
+      branch,
+      ctx,
+    });
+    const services = info.services ?? [];
+    if (services.length === 0) return;
+    const { driftedNames } = await repos.service.reconcileFromCompose(project.id, services);
+    if (driftedNames.length > 0) {
+      console.log(
+        `[compose-drift] ${project.id}: kept user edits on ${driftedNames.join(", ")} (pending review)`,
+      );
+    }
+  } catch (err) {
+    console.warn(`[compose-drift] reconcile skipped for ${project.id}:`, err);
+  }
 }
 
 /**
@@ -1092,6 +1140,11 @@ export async function redeployBuildSession(
   // pipeline gate (shouldUseProjectServicePipeline) re-queries the DB and
   // chooses the right mode regardless. Forcing it here would silently
   // override an explicit user choice on the original deployment.
+  // Reconcile upstream compose drift BEFORE reading the rows, so this redeploy
+  // picks up repo changes on unedited services (and flags edited ones). See
+  // reconcileComposeDrift — best-effort, never blocks.
+  await reconcileComposeDrift(ctx, project, branch);
+
   const currentComposeRows = await listProjectComposeServices(project.id).catch(() => []);
   const currentComposeServices = projectServicesToDeployableServices(
     currentComposeRows.filter((s) => s.enabled),
@@ -1208,6 +1261,12 @@ export async function triggerDeployment(
      */
     forceAll?: boolean;
     /**
+     * Repo-root-relative paths changed in this push (webhook only). Passed to
+     * the compose-drift reconciler so it can skip the repo scan when the compose
+     * file wasn't among them. Absent on manual triggers → reconcile runs.
+     */
+    changedPaths?: string[] | null;
+    /**
      * Smart per-service routing for a MANUAL multi-service redeploy: trace the
      * files changed between the active deployment's commit and the new HEAD and
      * rebuild ONLY the affected services (same detection the webhook uses). Used
@@ -1251,6 +1310,14 @@ export async function triggerDeployment(
   const environment = data.environment ?? "production";
 
   await checkNoActiveBuild(project.id);
+
+  // Reconcile upstream compose drift before the pipeline reads service rows —
+  // covers webhook (git push) + manual triggers. Skip atomic rollback: it must
+  // ship the frozen snapshot verbatim. `changedPaths` (webhook) lets it skip the
+  // repo scan when the push didn't touch the compose file. Best-effort; never blocks.
+  if (!data.reuseSnapshot && data.trigger !== "rollback") {
+    await reconcileComposeDrift(ctx, project, branch, data.changedPaths);
+  }
 
   // ATOMIC rollback path: reuse the target deployment's frozen snapshot verbatim
   // (its build config was already resolved + valid at original-deploy time).

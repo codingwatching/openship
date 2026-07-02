@@ -38,6 +38,9 @@ export { createDomainRepo, type Domain, type NewDomain } from "./domain.repo";
 export {
   createServiceRepo,
   normalizeRoutingFields,
+  toComposeSpec,
+  composeSpecsEqual,
+  composeSpecDiff,
   type Service,
   type NewService,
   type ServiceDeployment,

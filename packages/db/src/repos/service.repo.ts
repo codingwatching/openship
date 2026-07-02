@@ -2,6 +2,7 @@ import { eq, and, asc, inArray } from "drizzle-orm";
 import { generateId } from "@repo/core";
 import type { Database } from "../client";
 import { service, serviceDeployment } from "../schema";
+import type { ComposeServiceSpec } from "../schema/service";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -9,6 +10,107 @@ export type Service = typeof service.$inferSelect;
 export type NewService = typeof service.$inferInsert;
 export type ServiceDeployment = typeof serviceDeployment.$inferSelect;
 export type NewServiceDeployment = typeof serviceDeployment.$inferInsert;
+
+// ─── Compose spec (drift 3-way merge) ──────────────────────────────────────────
+
+/** The compose-owned fields, normalized so a parsed compose entry and a stored
+ *  row compare identically. Routing is deliberately excluded (user-owned). */
+export function toComposeSpec(s: {
+  image?: string | null;
+  build?: string | null;
+  dockerfile?: string | null;
+  ports?: string[] | null;
+  dependsOn?: string[] | null;
+  environment?: Record<string, string> | null;
+  volumes?: string[] | null;
+  command?: string | null;
+  restart?: string | null;
+}): ComposeServiceSpec {
+  return {
+    image: s.image ?? null,
+    build: s.build ?? null,
+    dockerfile: s.dockerfile ?? null,
+    ports: s.ports ?? [],
+    dependsOn: s.dependsOn ?? [],
+    environment: s.environment ?? {},
+    volumes: s.volumes ?? [],
+    command: s.command ?? null,
+    restart: s.restart ?? "unless-stopped",
+  };
+}
+
+const canonicalSpec = (s: ComposeServiceSpec): string => {
+  const env = s.environment ?? {};
+  const sortedEnv: Record<string, string> = {};
+  for (const k of Object.keys(env).sort()) sortedEnv[k] = env[k];
+  return JSON.stringify({
+    image: s.image ?? null,
+    build: s.build ?? null,
+    dockerfile: s.dockerfile ?? null,
+    ports: s.ports ?? [],
+    dependsOn: s.dependsOn ?? [],
+    environment: sortedEnv,
+    volumes: s.volumes ?? [],
+    command: s.command ?? null,
+    restart: s.restart ?? "unless-stopped",
+  });
+};
+
+/** Compose-field equality (ignores routing + ordering-insensitive env). */
+export const composeSpecsEqual = (a: ComposeServiceSpec, b: ComposeServiceSpec) =>
+  canonicalSpec(a) === canonicalSpec(b);
+
+/** Per-field diff of two specs — powers the drift UI. */
+export function composeSpecDiff(base: ComposeServiceSpec, next: ComposeServiceSpec) {
+  const fields: (keyof ComposeServiceSpec)[] = [
+    "image", "build", "dockerfile", "ports", "dependsOn", "environment", "volumes", "command", "restart",
+  ];
+  // `environment` must be compared key-order-insensitively, matching
+  // canonicalSpec/composeSpecsEqual — otherwise a reordered env block shows as a
+  // phantom "environment changed" the reviewer can't resolve.
+  const canon = (field: keyof ComposeServiceSpec, v: unknown) => {
+    if (field === "environment" && v && typeof v === "object") {
+      const obj = v as Record<string, string>;
+      const sorted: Record<string, string> = {};
+      for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
+      return JSON.stringify(sorted);
+    }
+    return JSON.stringify(v);
+  };
+  const changed: { field: string; from: unknown; to: unknown }[] = [];
+  const b = toComposeSpec(base);
+  const n = toComposeSpec(next);
+  for (const f of fields) {
+    if (canon(f, b[f]) !== canon(f, n[f])) {
+      changed.push({ field: f, from: b[f], to: n[f] });
+    }
+  }
+  return changed;
+}
+
+/**
+ * A service as parsed from a compose file (or the equivalent UI payload). Shared
+ * by syncFromCompose (import) and reconcileFromCompose (redeploy). `kind` is
+ * honored only when "compose"; monorepo entries are filtered out by both.
+ */
+export type ParsedComposeService = {
+  name: string;
+  kind?: string | null;
+  image?: string;
+  build?: string;
+  dockerfile?: string;
+  ports?: string[];
+  dependsOn?: string[];
+  environment?: Record<string, string>;
+  volumes?: string[];
+  command?: string;
+  restart?: string;
+  exposed?: boolean;
+  exposedPort?: string;
+  domain?: string;
+  customDomain?: string;
+  domainType?: string;
+};
 
 // ─── Routing normalization ───────────────────────────────────────────────────
 
@@ -245,31 +347,7 @@ export function createServiceRepo(db: Database) {
      * compose's YAML doesn't carry an enabled flag, so re-syncing a row
      * the user disabled in the dashboard must keep it disabled.
      */
-    async syncFromCompose(
-      projectId: string,
-      parsed: {
-        name: string;
-        /** Discriminator - strictly "compose" entries are honored. Monorepo
-         *  rows passed in here are dropped: no DB unique constraint on
-         *  (projectId, name) means a monorepo row pretending to be compose
-         *  would create a duplicate ghost row alongside the real one. */
-        kind?: string | null;
-        image?: string;
-        build?: string;
-        dockerfile?: string;
-        ports?: string[];
-        dependsOn?: string[];
-        environment?: Record<string, string>;
-        volumes?: string[];
-        command?: string;
-        restart?: string;
-        exposed?: boolean;
-        exposedPort?: string;
-        domain?: string;
-        customDomain?: string;
-        domainType?: string;
-      }[],
-    ) {
+    async syncFromCompose(projectId: string, parsed: ParsedComposeService[]) {
       // Defensive filter - even though every caller should already strip
       // non-compose entries before reaching here, an explicit kind="monorepo"
       // would otherwise insert a ghost compose row with the same name as the
@@ -296,29 +374,17 @@ export function createServiceRepo(db: Database) {
         });
 
         if (ex) {
-          // Update existing - preserve the operator's `enabled` choice. The
-          // compose YAML doesn't carry an enabled flag; forcing true on
-          // every sync would un-disable services the user explicitly
-          // disabled in the dashboard.
+          // Update existing - preserve the operator's `enabled` choice AND their
+          // `sortOrder` (dashboard reordering); the compose YAML carries neither.
           await this.update(ex.id, {
-            image: p.image ?? null,
-            build: p.build ?? null,
-            dockerfile: p.dockerfile ?? null,
-            ports: p.ports ?? [],
-            dependsOn: p.dependsOn ?? [],
-            environment: p.environment ?? {},
-            volumes: p.volumes ?? [],
-            command: p.command ?? null,
-            restart: p.restart ?? "unless-stopped",
+            ...toComposeSpec(p),
             ...routing,
-            // enabled left as-is (already on ex)
-            sortOrder: i,
+            // enabled + sortOrder left as-is (already on ex)
           });
           results.push({
             ...ex,
-            ...p,
+            ...toComposeSpec(p),
             ...routing,
-            sortOrder: i,
             updatedAt: new Date(),
           } as Service);
         } else {
@@ -327,15 +393,7 @@ export function createServiceRepo(db: Database) {
             projectId,
             name: p.name,
             kind: "compose",
-            image: p.image ?? null,
-            build: p.build ?? null,
-            dockerfile: p.dockerfile ?? null,
-            ports: p.ports ?? [],
-            dependsOn: p.dependsOn ?? [],
-            environment: p.environment ?? {},
-            volumes: p.volumes ?? [],
-            command: p.command ?? null,
-            restart: p.restart ?? "unless-stopped",
+            ...toComposeSpec(p),
             ...routing,
             enabled: true,
             sortOrder: i,
@@ -354,6 +412,116 @@ export function createServiceRepo(db: Database) {
       }
 
       return results;
+    },
+
+    /**
+     * REDEPLOY reconciliation — 3-way merge of the freshly re-parsed repo compose
+     * (`parsed` = "theirs") against each row's `importedSpec` ("base") and current
+     * values ("ours"):
+     *   • repo unchanged             → keep ours (clear any stale drift)
+     *   • repo changed, not edited   → auto-apply theirs, advance baseline
+     *   • repo changed, edited       → keep ours, set `driftSpec` (needs approval)
+     *   • new upstream service       → create (baseline = theirs)
+     *   • removed upstream, unedited → remove; edited/unknown baseline → keep
+     * Baseline bootstrap: rows with null `importedSpec` (pre-feature, or just
+     * imported by the wizard) adopt theirs as baseline on first reconcile WITHOUT
+     * overwriting the user's values. Never touches routing, `enabled`, or
+     * `sortOrder` (all user-owned).
+     *
+     * Unlike syncFromCompose, `parsed` here is the REPO's current compose, not a
+     * UI/DB-derived payload — so it detects real upstream drift.
+     */
+    async reconcileFromCompose(projectId: string, parsed: ParsedComposeService[]) {
+      const composeParsed = parsed.filter((p) => !p.kind || p.kind === "compose");
+      const all = await this.listByProject(projectId);
+      const composeExisting = all.filter((s) => s.kind === "compose" || s.kind === null);
+      const existingByName = new Map(composeExisting.map((s) => [s.name, s]));
+      const incomingNames = new Set(composeParsed.map((s) => s.name));
+      const driftedNames: string[] = [];
+
+      for (let i = 0; i < composeParsed.length; i++) {
+        const p = composeParsed[i];
+        const theirs = toComposeSpec(p);
+        const ex = existingByName.get(p.name);
+
+        // New upstream service → create with baseline = theirs.
+        if (!ex) {
+          const routing = normalizeRoutingFields({
+            exposed: p.exposed ?? false,
+            exposedPort: p.exposedPort,
+            domain: p.domain,
+            customDomain: p.customDomain,
+            domainType: p.domainType,
+          });
+          await this.create({
+            projectId,
+            name: p.name,
+            kind: "compose",
+            ...theirs,
+            ...routing,
+            importedSpec: theirs,
+            driftSpec: null,
+            enabled: true,
+            sortOrder: i,
+          });
+          continue;
+        }
+
+        const base = ex.importedSpec ?? null;
+        const ours = toComposeSpec(ex);
+
+        // Bootstrap: no baseline yet → adopt theirs as baseline, keep ours.
+        // sortOrder is NEVER reset by reconcile — it's user-editable (dashboard
+        // reordering) and the compose file has no ordering to authoritatively sync.
+        if (base === null) {
+          await this.update(ex.id, { importedSpec: theirs, driftSpec: null });
+          continue;
+        }
+
+        // Repo unchanged → keep ours. Only write to clear a stale drift (repo
+        // reverted to base); otherwise skip entirely so we don't churn updatedAt
+        // on every deploy.
+        if (composeSpecsEqual(theirs, base)) {
+          if (ex.driftSpec) await this.update(ex.id, { driftSpec: null });
+          continue;
+        }
+
+        // Repo changed, user has NOT edited → auto-apply theirs, advance baseline.
+        if (composeSpecsEqual(ours, base)) {
+          const routing = normalizeRoutingFields({
+            exposed: ex.exposed,
+            exposedPort: ex.exposedPort,
+            domain: ex.domain,
+            customDomain: ex.customDomain,
+            domainType: ex.domainType,
+          });
+          await this.update(ex.id, {
+            ...theirs,
+            ...routing,
+            importedSpec: theirs,
+            driftSpec: null,
+          });
+          continue;
+        }
+
+        // Repo changed AND user edited → protect ours, flag drift for approval.
+        // Only write when the pending drift actually changes (avoid churn).
+        if (!ex.driftSpec || !composeSpecsEqual(ex.driftSpec, theirs)) {
+          await this.update(ex.id, { driftSpec: theirs });
+        }
+        driftedNames.push(p.name);
+      }
+
+      // Removed upstream: remove only if the user never edited it; otherwise keep.
+      for (const ex of composeExisting) {
+        if (incomingNames.has(ex.name)) continue;
+        const base = ex.importedSpec ?? null;
+        const unedited = base !== null && composeSpecsEqual(toComposeSpec(ex), base);
+        if (unedited) await this.remove(ex.id);
+      }
+
+      const services = await this.listByProject(projectId);
+      return { services, driftedNames };
     },
 
     // ── Service Deployments ────────────────────────────────────────────

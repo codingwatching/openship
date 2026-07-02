@@ -1,0 +1,82 @@
+---
+title: Compose Services
+description: How Openship imports a docker-compose project, keeps services in sync with the repo, and reconciles dashboard edits.
+---
+
+Openship can deploy a `docker-compose.yml` project **as individual services** — each
+service (web, db, redis, …) becomes a deployable unit with its own ports, volumes,
+environment, and routing. This page explains how the compose file, the dashboard,
+and your deployments stay in sync.
+
+## Import: the file becomes service records
+
+When you import a compose project, Openship parses `docker-compose.yml` **once** and
+creates a **service record** per service. From then on, those records are the working
+source of truth — the raw compose text is not stored. You can edit each service in the
+dashboard (Services tab → **Configuration**): ports, volumes, command, restart policy,
+and environment.
+
+<Callout>
+Only the fields Openship models are tracked (`image`, `build`, `ports`, `volumes`,
+`environment`, `command`, `restart`, `depends_on`). Everything else in your compose
+file — `healthcheck`, `networks`, build args, labels, comments, anchors — is left
+untouched and preserved on write-back.
+</Callout>
+
+## Redeploy: automatic reconciliation
+
+On every redeploy or `git push` (GitHub-backed projects), Openship **re-parses the
+repo's current `docker-compose.yml`** and does a 3-way merge against each service,
+comparing three things:
+
+- **base** — the compose spec as last imported,
+- **yours** — the service's current values (including dashboard edits),
+- **theirs** — the repo file right now.
+
+| Repo changed? | You edited it? | What happens |
+| --- | --- | --- |
+| no | — | nothing — your values stand |
+| yes | no | **auto-applied** from the repo, baseline advances |
+| yes | yes | **your values are kept**, and the change is flagged as **drift** for review |
+| new service in repo | — | added automatically |
+| removed from repo | no | removed |
+| removed from repo | yes | kept (your work is never silently deleted) |
+
+So unedited services track the repo automatically, and your dashboard edits are never
+overwritten without asking.
+
+## Reviewing drift
+
+When the repo changes a value you had edited, the Services tab shows a **drift banner**
+with a per-field diff (`from → to`) and two choices per service:
+
+- **Accept upstream** — take the repo's value and move your baseline to it.
+- **Keep mine** — keep your value; the baseline advances so it stops re-flagging, but
+  your edit stays in effect.
+
+## Keeping the repo canonical
+
+Dashboard edits are stored by Openship and used on every deploy — you don't need to
+touch the repo for them to take effect. Like other deploy platforms, **Openship never
+writes to your repository.** If you want `docker-compose.yml` itself to reflect an edit
+(so a fresh clone or a teammate sees it), change the file in your repo and push — that
+push reconciles cleanly, and because your value now matches the repo the drift clears.
+
+In short: edit in the dashboard for a quick change; edit the repo when you want it to be
+the durable, reviewed source of truth. Either way, deploys always run your current values
+and drift is surfaced when the two diverge.
+
+## Cloud vs. self-hosted: ports & volumes
+
+How ports and volumes behave depends on where the service runs:
+
+- **Self-hosted / server (Docker):** `host:container` port mappings are published on the
+  host, and volumes (named or bind mounts) are mounted. Full compose semantics.
+- **Openship Cloud:** only the **container** port matters — it's routed through the edge
+  proxy to your domain; a published *host* port is ignored. **Docker volume mounts do not
+  apply.** A cloud service's data lives on its workspace's persistent disk, which survives
+  restarts but is **not carried across a rebuild** unless you enable backups.
+
+The dashboard reflects this per target: on cloud, the host-port and volume fields are
+disabled with a note, and stateful images (Postgres, MySQL, Mongo, Redis) show a reminder
+to enable backups.

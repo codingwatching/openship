@@ -12,6 +12,24 @@ import {
 import { project } from "./project";
 import { deployment } from "./deployment";
 
+/**
+ * The compose-owned fields of a service — the shape stored in `importedSpec`
+ * (last-imported baseline) and `driftSpec` (pending upstream) for 3-way drift
+ * reconciliation. Routing (exposed/domain/…) is deliberately excluded: it's
+ * user-owned and never counts as upstream drift.
+ */
+export type ComposeServiceSpec = {
+  image?: string | null;
+  build?: string | null;
+  dockerfile?: string | null;
+  ports?: string[];
+  dependsOn?: string[];
+  environment?: Record<string, string>;
+  volumes?: string[];
+  command?: string | null;
+  restart?: string | null;
+};
+
 // ─── Services ────────────────────────────────────────────────────────────────
 
 /**
@@ -103,6 +121,19 @@ export const service = pgTable("service", {
    * detector; null = no service-specific overrides.
    */
   alwaysRebuildGlobs: jsonb("always_rebuild_globs").$type<string[] | null>(),
+
+  /* ── Drift reconciliation (compose re-parse) ────────────────────────── */
+  /**
+   * The compose spec as last imported from the repo — the "base" for 3-way
+   * drift merge on redeploy. Null on rows created before this existed →
+   * treated as fully user-owned until the next import establishes a baseline.
+   */
+  importedSpec: jsonb("imported_spec").$type<ComposeServiceSpec>(),
+  /**
+   * Pending upstream compose spec awaiting user approval — set when the repo
+   * compose changed a field the user had edited. Null = no pending drift.
+   */
+  driftSpec: jsonb("drift_spec").$type<ComposeServiceSpec>(),
 
   /* ── State ──────────────────────────────────────────────────────────── */
   /** Whether this service should be deployed (allows disabling individual services) */

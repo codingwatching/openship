@@ -1,60 +1,29 @@
 # ──────────────────────────────────────────────────────────
-# Openship — Docker Compose (profiles: selfhosted | saas)
+# Openship — Docker Compose
 #
-#   cp .env.example .env          # then edit secrets
+#   cp .env.example .env          # then edit
+#   docker compose up -d --build
 #
-#   docker compose up -d --build                    # SELF-HOSTED (default)
-#   COMPOSE_PROFILES=saas docker compose up -d --build   # the SaaS
+# ONE set of services. The MODE is decided entirely by .env — there are no
+# profiles and no per-mode service variants:
+#   • Default (users): self-hosted  → CLOUD_MODE=false (the .env.example default)
+#   • SaaS (our env):                 CLOUD_MODE=true + OPENSHIP_TARGET=cloud-saas
+#                                     + Oblien / GitHub App / secrets
 #
-# The active profile is driven by COMPOSE_PROFILES in .env (defaults to
-# "selfhosted"). Switch to the SaaS by setting COMPOSE_PROFILES=saas there,
-# or exporting it on the command line as shown above.
+# Services:
+#   • postgres → private :5432   (storage)
+#   • redis    → private :6379   (queue + cache + rate-limit)
+#   • api      → :4000
+#   • dashboard→ :3001
+#   • web      → :3000
 #
-# Shared across both profiles (no profile → always run):
-#   • postgres  → :5432   (storage)
-#   • redis     → :6379   (queue + cache + rate-limit)
-#   • web       → :3000   (landing)
-#
-# selfhosted profile:  api :4000, dashboard :3001   (OPENSHIP_TARGET=local)
-# saas profile:        api :4100, dashboard :3002   (OPENSHIP_TARGET=*-saas)
-#
-# NOTE the port split: the API's listen port is dictated by OPENSHIP_TARGET
-# (packages/core/runtime-config.ts), NOT the PORT env — local=4000, the
-# SaaS targets=4100. The compose port maps + healthchecks below match that.
-#
-# Redis is FORCED in both API variants (OPENSHIP_REQUIRE_REDIS=true) so the
-# job runner / cache / rate-limiter use Redis and never silently fall back to
-# in-memory. The API auto-migrates Postgres on boot.
+# The API + dashboard bind fixed internal ports via PORT (the API honors PORT
+# regardless of OPENSHIP_TARGET); a reverse proxy maps the public domains to
+# them. postgres/redis are internal-only. The API auto-migrates Postgres on boot.
 # ──────────────────────────────────────────────────────────
 
-# ─── Reusable fragments ───────────────────────────────────
-x-api-common: &api-common
-  build:
-    context: .
-    dockerfile: apps/api/Dockerfile
-  restart: unless-stopped
-  # All app config comes from .env; the per-service `environment:` blocks below
-  # OVERRIDE it with in-cluster service DNS + mode flags (compose `environment`
-  # wins over `env_file`), so .env keeps localhost values for non-Docker runs
-  # and carries the SaaS credentials (Oblien / GitHub App / secrets).
-  env_file:
-    - .env
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
-
-x-dashboard-common: &dashboard-common
-  build:
-    context: .
-    dockerfile: apps/dashboard/Dockerfile
-  restart: unless-stopped
-  env_file:
-    - .env
-
 services:
-  # ─── Shared: Database (storage) ───────────────────────
+  # ─── Database (storage, private) ──────────────────────
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -62,8 +31,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-openship}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openship}
       POSTGRES_DB: ${POSTGRES_DB:-openship}
-    ports:
-      - "5432:5432"
+    # PRIVATE: not published to the host. api reaches it at postgres:5432.
+    expose:
+      - "5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -72,13 +42,14 @@ services:
       timeout: 3s
       retries: 12
 
-  # ─── Shared: Cache / Queue / Rate-limit ───────────────
+  # ─── Cache / Queue / Rate-limit (private) ─────────────
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "6379:6379"
+    # PRIVATE: not published to the host. api reaches it at redis:6379.
+    expose:
+      - "6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -87,7 +58,55 @@ services:
       timeout: 3s
       retries: 12
 
-  # ─── Shared: Web / Landing ────────────────────────────
+  # ─── API (control plane) ──────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    # Mode + secrets (CLOUD_MODE, DEPLOY_MODE, OPENSHIP_TARGET, Oblien, GitHub
+    # App, auth secrets, …) all come from .env. The values below OVERRIDE it
+    # with the fixed internal port + in-cluster service DNS (compose
+    # `environment` wins over `env_file`).
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      DATABASE_URL: postgresql://${POSTGRES_USER:-openship}:${POSTGRES_PASSWORD:-openship}@postgres:5432/${POSTGRES_DB:-openship}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  # ─── Dashboard (app UI) ───────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ─── Web / Landing ────────────────────────────────────
   web:
     build:
       context: .
@@ -98,83 +117,6 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
-
-  # ══════════════════════════════════════════════════════
-  #  SELF-HOSTED profile (default)
-  # ══════════════════════════════════════════════════════
-  api:
-    <<: *api-common
-    profiles: ["selfhosted"]
-    ports:
-      - "4000:4000"
-    environment:
-      NODE_ENV: production
-      CLOUD_MODE: "false"
-      DEPLOY_MODE: docker
-      DATABASE_URL: postgresql://${POSTGRES_USER:-openship}:${POSTGRES_PASSWORD:-openship}@postgres:5432/${POSTGRES_DB:-openship}
-      REDIS_URL: redis://redis:6379
-      OPENSHIP_REQUIRE_REDIS: "true"
-    healthcheck:
-      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:4000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 40s
-
-  dashboard:
-    <<: *dashboard-common
-    profiles: ["selfhosted"]
-    ports:
-      - "3001:3001"
-    environment:
-      NODE_ENV: production
-      PORT: "3001"
-      CLOUD_MODE: "false"
-    depends_on:
-      api:
-        condition: service_healthy
-
-  # ══════════════════════════════════════════════════════
-  #  SaaS profile (COMPOSE_PROFILES=saas)
-  # ══════════════════════════════════════════════════════
-  api-saas:
-    <<: *api-common
-    profiles: ["saas"]
-    # SaaS target listens on 4100 (OPENSHIP_TARGET drives the port).
-    ports:
-      - "4100:4100"
-    environment:
-      NODE_ENV: production
-      CLOUD_MODE: "true"
-      DEPLOY_MODE: cloud
-      # cloud-saas → api.openship.io URLs; local-saas → localhost. A customer
-      # running their OWN SaaS domain must set this (runtime-config row).
-      OPENSHIP_TARGET: ${OPENSHIP_TARGET:-cloud-saas}
-      DATABASE_URL: postgresql://${POSTGRES_USER:-openship}:${POSTGRES_PASSWORD:-openship}@postgres:5432/${POSTGRES_DB:-openship}
-      REDIS_URL: redis://redis:6379
-      OPENSHIP_REQUIRE_REDIS: "true"
-      # Oblien / GitHub App / INTERNAL_TOKEN / BETTER_AUTH_SECRET flow in from
-      # .env via env_file — CLOUD_MODE boot requires them.
-    healthcheck:
-      test: ["CMD-SHELL", "bun -e \"fetch('http://127.0.0.1:4100/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 40s
-
-  dashboard-saas:
-    <<: *dashboard-common
-    profiles: ["saas"]
-    ports:
-      - "3002:3002"
-    environment:
-      NODE_ENV: production
-      PORT: "3002"
-      CLOUD_MODE: "true"
-      OPENSHIP_TARGET: ${OPENSHIP_TARGET:-cloud-saas}
-    depends_on:
-      api-saas:
-        condition: service_healthy
 
 volumes:
   postgres_data:

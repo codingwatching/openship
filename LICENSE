@@ -2,12 +2,15 @@ Openship — License
 
 Copyright (c) 2026 Oblien LLC. All rights reserved.
 "Openship" and the Openship name and logo are trademarks of Oblien LLC.
+This License grants no right to use the Openship name, logo, or other
+trademarks of Oblien LLC, except as necessary to comply with the attribution
+requirements of the License or with the prior written permission of Oblien LLC.
 
 Openship is SOURCE-AVAILABLE software. It is licensed under the GNU Affero
 General Public License, version 3.0 (the "AGPL", the full text of which is
-reproduced below), AS MODIFIED by the "Commons Clause" License Condition v1.0
+reproduced below), together with the "Commons Clause" License Condition v1.0
 set out immediately below. Where the Commons Clause condition conflicts with
-the AGPL, the Commons Clause condition controls.
+the AGPL, the Commons Clause condition prevails.
 
 Because of the Commons Clause condition, this is NOT an OSI-approved
 open-source license. Do not describe it as plain "AGPL-3.0"; refer to it as
@@ -38,23 +41,55 @@ Licensor: Oblien LLC
 -------------------------------------------------------------------------------
 Reservation of Rights and Authorized SaaS Provider
 
+In plain terms: Self-hosting solely for your own internal use or the internal
+use of your organization is permitted. Hosting providers and application
+marketplaces may also offer one-click, template, or image-based deployments
+that let a user stand up and run their OWN self-hosted instance on their own
+server — that is still self-hosting, and it is allowed, even if the provider
+charges for the server or the convenience of installation. What is prohibited,
+unless separately licensed by Oblien LLC, is offering the Software, whether
+modified or unmodified, to third parties as a hosted, managed, or
+software-as-a-service (SaaS) offering that YOU operate for them. Running it for
+yourself — or giving someone the means to run it for themselves — is allowed;
+running it for your customers is not.
+
 1. You may use, run, modify, and self-host the Software for any purpose,
    including internal commercial use within your own organization or company,
    subject to the AGPL-3.0 terms reproduced below.
 
-2. The Commons Clause condition above removes from every licensee the right to
-   "Sell" the Software. This expressly includes offering the Software — or any
-   product or service whose value derives, entirely or substantially, from its
-   functionality — to third parties as a hosted, managed, or
-   "software-as-a-service" (SaaS) offering.
+2. Distributing the Software, and providing images, templates, installers,
+   scripts, or one-click or marketplace provisioning that deploy the Software
+   for self-hosting, is PERMITTED — including by infrastructure or hosting
+   providers and application marketplaces, and including where a fee is charged
+   for the underlying compute or storage or for the convenience of installation
+   — provided that each resulting instance is administered and controlled by,
+   and operated for the internal use of, a single end user or organization (the
+   "self-hoster") who holds that instance's administrative credentials and
+   controls its infrastructure and data. In this case the provider is supplying
+   infrastructure or installation convenience, not operating the Software as a
+   service to third parties. For the avoidance of doubt, the activities
+   described in this Section 2 do not constitute "Selling" the Software under
+   the Commons Clause condition above, nor operating the Software as a hosted,
+   managed, or "software-as-a-service" (SaaS) offering to third parties, for
+   purposes of this License.
 
-3. Oblien LLC, as copyright holder and Licensor, reserves and retains that
-   right exclusively. Openship and Oblien LLC are the ONLY parties authorized
-   to offer the Software to third parties as a hosted / managed / SaaS service.
-   Any other party wishing to do so must obtain a separate commercial license
-   from Oblien LLC.
+3. What the Commons Clause condition removes from every licensee is the right to
+   operate the Software AS A SERVICE for third parties: to run, host, or
+   maintain one or more instances that YOU control and to provide access to
+   third parties as users or tenants, such that those third parties are not the
+   operators of their own self-hosted instance. This expressly includes any
+   multi-tenant hosted, managed, or "software-as-a-service" (SaaS) offering, and
+   any product or service whose value derives, entirely or substantially, from
+   the Software's functionality and that you provide to third parties for a fee
+   or other consideration.
 
-4. Oblien LLC may release future versions of the Software under different terms,
+4. Oblien LLC, as the copyright holder and Licensor, exclusively reserves the
+   right to operate, or to commercially license the operation of, the Software
+   as a hosted, managed, or multi-tenant SaaS offering for third parties. Any
+   other party wishing to do so must obtain a separate commercial license from
+   Oblien LLC.
+
+5. Oblien LLC may release future versions of the Software under different terms,
    at its sole discretion. This notice governs this version and any copy that
    includes it; it does not retroactively alter the terms under which prior
    copies were received.
@@ -63,7 +98,7 @@ For commercial or SaaS licensing inquiries, contact Oblien LLC.
 
 -------------------------------------------------------------------------------
 The full text of the GNU Affero General Public License, version 3.0, follows.
-It applies except as modified by the Commons Clause condition above.
+It applies subject to the Commons Clause condition above.
 -------------------------------------------------------------------------------
 
                     GNU AFFERO GENERAL PUBLIC LICENSE

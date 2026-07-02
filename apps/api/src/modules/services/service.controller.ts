@@ -9,6 +9,7 @@
  */
 
 import type { Context } from "hono";
+import { AppError } from "@repo/core";
 import { streamSSE } from "../../lib/sse";
 import { param } from "../../lib/controller-helpers";
 import { getRequestContext } from "../../lib/request-context";
@@ -47,7 +48,8 @@ export async function getById(c: Context) {
     return c.json({ success: true, service: svc });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to get service";
-    const status = message === "service-not-found" || message === "project-not-found" ? 404 : 400;
+    const status =
+      (err instanceof AppError && err.statusCode === 404) || message === "service-not-found" ? 404 : 400;
     return c.json({ success: false, error: message }, status);
   }
 }
@@ -94,6 +96,38 @@ export async function remove(c: Context) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to delete service";
     return c.json({ success: false, error: message }, 400);
+  }
+}
+
+// ─── Compose drift (repo re-parse reconciliation) ────────────────────────────
+
+export async function acceptDrift(c: Context) {
+  const ctx = getRequestContext(c);
+  const projectId = param(c, "id");
+  const serviceId = param(c, "serviceId");
+  try {
+    const svc = await serviceService.acceptServiceDrift(ctx, projectId, serviceId);
+    return c.json({ success: true, service: svc });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to accept drift";
+    const status =
+      (err instanceof AppError && err.statusCode === 404) || message === "service-not-found" ? 404 : 400;
+    return c.json({ success: false, error: message }, status);
+  }
+}
+
+export async function keepDrift(c: Context) {
+  const ctx = getRequestContext(c);
+  const projectId = param(c, "id");
+  const serviceId = param(c, "serviceId");
+  try {
+    const svc = await serviceService.keepServiceDrift(ctx, projectId, serviceId);
+    return c.json({ success: true, service: svc });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to keep edits";
+    const status =
+      (err instanceof AppError && err.statusCode === 404) || message === "service-not-found" ? 404 : 400;
+    return c.json({ success: false, error: message }, status);
   }
 }
 

@@ -62,6 +62,10 @@ export const endpoints = {
       `projects/${projectId}/services/${serviceId}/stop`,
     restart: (projectId: string | number, serviceId: string) =>
       `projects/${projectId}/services/${serviceId}/restart`,
+    driftAccept: (projectId: string | number, serviceId: string) =>
+      `projects/${projectId}/services/${serviceId}/drift/accept`,
+    driftKeep: (projectId: string | number, serviceId: string) =>
+      `projects/${projectId}/services/${serviceId}/drift/keep`,
     logs: (projectId: string | number, serviceId: string) =>
       `projects/${projectId}/services/${serviceId}/logs`,
     logsStream: (projectId: string | number, serviceId: string) =>

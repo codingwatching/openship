@@ -191,6 +191,9 @@ async function deployProjectFromPush(
       trigger: "webhook",
       serviceIds,
       forceAll,
+      // Let the compose-drift reconciler skip its repo scan when this push
+      // didn't touch a compose file. Truncated → pass null (unknown → reconcile).
+      changedPaths: changedPathsTruncated ? null : changedPaths,
     },
   );
 

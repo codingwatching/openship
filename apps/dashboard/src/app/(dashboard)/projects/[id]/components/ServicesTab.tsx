@@ -14,12 +14,25 @@ import {
   Globe,
   Container,
   AlertCircle,
+  AlertTriangle,
   ChevronRight,
   ArrowLeft,
   Plus,
 } from "lucide-react";
+
 import { ServiceDetailPanel } from "./services/ServiceDetailPanel";
 import { AddServiceModal } from "./services/AddServiceModal";
+
+/** Render a drift diff value (arrays → csv, objects → keys, scalars → string). */
+const fmtDriftVal = (v: unknown): string => {
+  if (v == null) return "—";
+  if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
+  if (typeof v === "object") {
+    const keys = Object.keys(v as Record<string, unknown>);
+    return keys.length ? keys.join(", ") : "—";
+  }
+  return String(v) || "—";
+};
 
 /* ── Main Component ─────────────────────────────────────────────────── */
 
@@ -33,6 +46,7 @@ export const ServicesTab = () => {
   const [containersLoading, setContainersLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [driftBusy, setDriftBusy] = useState<string | null>(null);
 
   const services = servicesData.services;
   const loading = servicesData.isLoading || containersLoading;
@@ -132,6 +146,33 @@ export const ServicesTab = () => {
       router.push(`/projects/${id}/services/${result.service.id}`);
     }
   };
+
+  const resolveDrift = useCallback(
+    async (serviceId: string, action: "accept" | "keep", name: string) => {
+      if (!hasProjectId) return;
+      setDriftBusy(serviceId);
+      try {
+        const res =
+          action === "accept"
+            ? await servicesApi.acceptDrift(id, serviceId)
+            : await servicesApi.keepDrift(id, serviceId);
+        if (res.success === false) throw new Error("Request failed");
+        showToast(
+          action === "accept" ? `${name}: applied repo changes` : `${name}: kept your edits`,
+          "success",
+          "Service",
+        );
+        await fetchData();
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : "Failed to resolve drift", "error", name);
+      } finally {
+        setDriftBusy(null);
+      }
+    },
+    [hasProjectId, id, showToast, fetchData],
+  );
+
+  const driftedServices = services.filter((s) => s.drift && s.drift.changes.length > 0);
 
   /* ── Loading state ─────────────────────────────────────────────── */
   if (loading) {
@@ -383,6 +424,67 @@ export const ServicesTab = () => {
         </div>
       </div>
 
+      {/* Upstream compose drift — edited services whose repo values changed */}
+      {driftedServices.length > 0 && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/[0.07] p-5">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="size-4 text-amber-600 dark:text-amber-400" />
+            <h4 className="text-sm font-semibold text-foreground">
+              {driftedServices.length} service{driftedServices.length === 1 ? "" : "s"} changed in the repo
+            </h4>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            The repo&apos;s docker-compose changed values you had edited here. Your edits are still
+            live — for each, keep yours or take the repo&apos;s.
+          </p>
+          <div className="mt-4 space-y-3">
+            {driftedServices.map((svc) => (
+              <div key={svc.id} className="rounded-xl border border-border/50 bg-card p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-sm font-semibold text-foreground">{svc.name}</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={driftBusy === svc.id}
+                      onClick={() => resolveDrift(svc.id, "keep", svc.name)}
+                      className="rounded-lg border border-border/60 px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-muted/60 disabled:opacity-50"
+                    >
+                      Keep mine
+                    </button>
+                    <button
+                      type="button"
+                      disabled={driftBusy === svc.id}
+                      onClick={() => resolveDrift(svc.id, "accept", svc.name)}
+                      className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-amber-500/90 disabled:opacity-50"
+                    >
+                      Accept upstream
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-3 space-y-1.5">
+                  {svc.drift!.changes.map((ch) => (
+                    <div key={ch.field} className="flex items-start gap-2 text-xs">
+                      <span className="mt-0.5 w-24 shrink-0 font-mono text-muted-foreground">
+                        {ch.field}
+                      </span>
+                      <span className="min-w-0 flex-1 font-mono">
+                        <span className="text-red-600/80 line-through dark:text-red-400/70">
+                          {fmtDriftVal(ch.from)}
+                        </span>
+                        <span className="mx-1.5 text-muted-foreground">→</span>
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          {fmtDriftVal(ch.to)}
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="bg-card rounded-2xl border border-border/50 divide-y divide-border/30 overflow-hidden">
         {services.map((svc) => {
           const ct = containerFor(svc.id);
@@ -425,6 +527,12 @@ export const ServicesTab = () => {
                     <Globe className="size-2.5" />
                     {svc.exposed ? "Public" : "Internal"}
                   </span>
+                  {svc.drift && svc.drift.changes.length > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-600 dark:text-amber-400">
+                      <AlertTriangle className="size-2.5" />
+                      Upstream change
+                    </span>
+                  )}
                 </div>
                 <p className="text-[12px] text-muted-foreground truncate mt-1">
                   {isMonorepo ? (

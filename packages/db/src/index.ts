@@ -3,6 +3,7 @@ export { db, getDriver, type Database, type Driver } from "./client";
 
 // ─── Schema (table definitions) ──────────────────────────────────────────────
 export * as schema from "./schema";
+export type { ComposeServiceSpec } from "./schema/service";
 
 // ─── Dump / restore (team-mode migration + project transfer) ─────────────────
 export {
@@ -34,6 +35,9 @@ export {
   createServiceDeploymentRepo,
   createPersonalAccessTokenRepo,
   normalizeRoutingFields,
+  toComposeSpec,
+  composeSpecsEqual,
+  composeSpecDiff,
   createSettingsRepo,
   createServerRepo,
   createServerTunnelRepo,

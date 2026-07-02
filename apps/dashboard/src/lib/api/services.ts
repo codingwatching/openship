@@ -48,6 +48,14 @@ export interface Service {
   framework?: string | null;
   packageManager?: string | null;
   buildImage?: string | null;
+  /** Pending upstream compose drift (repo changed a field the user had edited).
+   *  Null when nothing needs review. Set by the redeploy reconciler. */
+  drift?: ServiceDrift | null;
+}
+
+/** A pending upstream compose change awaiting review (accept upstream / keep mine). */
+export interface ServiceDrift {
+  changes: Array<{ field: string; from: unknown; to: unknown }>;
 }
 
 export interface ServiceContainer {
@@ -196,4 +204,16 @@ export const servicesApi = {
   /** Restart a service container */
   restart: (projectId: string | number, serviceId: string) =>
     api.post<{ success: boolean }>(endpoints.services.restart(projectId, serviceId)),
+
+  /** Accept the pending upstream compose change (apply repo values, clear drift) */
+  acceptDrift: (projectId: string | number, serviceId: string) =>
+    api.post<{ success: boolean; service: Service }>(
+      endpoints.services.driftAccept(projectId, serviceId),
+    ),
+
+  /** Keep the user's edits (advance baseline, clear drift without changing values) */
+  keepDrift: (projectId: string | number, serviceId: string) =>
+    api.post<{ success: boolean; service: Service }>(
+      endpoints.services.driftKeep(projectId, serviceId),
+    ),
 };

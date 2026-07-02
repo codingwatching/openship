@@ -83,6 +83,20 @@ r.delete(
   ctrl.remove,
 );
 
+/* ─── Compose drift (accept upstream / keep edits) ──────────────────────── */
+r.post(
+  "/:serviceId/drift/accept",
+  { tag: "project:service:write" },
+  cloudProjectProxy,
+  ctrl.acceptDrift,
+);
+r.post(
+  "/:serviceId/drift/keep",
+  { tag: "project:service:write" },
+  cloudProjectProxy,
+  ctrl.keepDrift,
+);
+
 /* ─── Per-service container actions ─────────────────────────────────────── */
 r.post("/:serviceId/start", { tag: "project:service:write" }, cloudProjectProxy, ctrl.startContainer);
 r.post("/:serviceId/stop", { tag: "project:service:write" }, cloudProjectProxy, ctrl.stopContainer);

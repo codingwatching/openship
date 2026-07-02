@@ -33,6 +33,16 @@ const envBool = (defaultValue: "true" | "false" | "" = "") =>
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
 
+  /* ---------- Listen port ---------- */
+  /**
+   * Honored when set so a SINGLE docker-compose service definition works
+   * regardless of OPENSHIP_TARGET — the container binds a fixed internal
+   * port and the reverse proxy maps the public domain to it. Unset, empty,
+   * or invalid (non-integer / ≤0) falls back to the runtime target's port
+   * (local=4000, saas=4100) via `.catch()`.
+   */
+  PORT: z.coerce.number().int().positive().catch(runtimeTarget.ports.api),
+
   /* ---------- Mode ---------- */
   CLOUD_MODE: envBool("false"),
   /**
@@ -255,9 +265,9 @@ const envSchema = z.object({
     .default(512 * 1024),
 });
 
-type Env = z.infer<typeof envSchema> & { PORT: number };
+type Env = z.infer<typeof envSchema>;
 
-const parsedEnv = envSchema.parse(process.env);
+export const env: Env = envSchema.parse(process.env);
 
 // Print resolution at MODULE LOAD, before any handler runs. If
 // boot crashes (e.g. EADDRINUSE on listen), this still shows. The
@@ -268,11 +278,6 @@ console.log(
     `→ self=${runtimeTargetId} (${runtimeTarget.api})  ` +
     `cloud=${cloudRuntimeTargetId} (${cloudRuntimeTarget.api})`,
 );
-
-export const env: Env = {
-  ...parsedEnv,
-  PORT: runtimeTarget.ports.api,
-};
 
 /**
  * Redis REQUIRED — when true the job runner, cache-store and rate-limit store

@@ -2,7 +2,7 @@
  * Service business logic - CRUD and compose sync.
  */
 
-import { normalizeRoutingFields, repos } from "@repo/db";
+import { normalizeRoutingFields, repos, composeSpecDiff, type Service } from "@repo/db";
 import type { LogEntry } from "@repo/adapters";
 import { encrypt, decrypt } from "../../lib/encryption";
 import { assertResourceInOrg, platform } from "../../lib/controller-helpers";
@@ -57,12 +57,28 @@ function normalizeRoutingPatch(input: Parameters<typeof normalizeRoutingFields>[
   };
 }
 
+// ─── Drift (compose reconciliation) ────────────────────────────────────────
+
+/**
+ * Attach a computed `drift` field: the base→upstream field diff when the repo
+ * compose changed a value the user had edited (`driftSpec` set by
+ * reconcileFromCompose). `null` when there's nothing pending review.
+ */
+function withDrift(svc: Service) {
+  return {
+    ...svc,
+    drift: svc.driftSpec
+      ? { changes: composeSpecDiff(svc.importedSpec ?? {}, svc.driftSpec) }
+      : null,
+  };
+}
+
 // ─── Read ────────────────────────────────────────────────────────────────────
 
 export async function listServices(ctx: RequestContext, projectId: string) {
   const project = await repos.project.findById(projectId);
   assertResourceInOrg(project, "Project", ctx.organizationId, projectId);
-  return repos.service.listByProject(projectId);
+  return (await repos.service.listByProject(projectId)).map(withDrift);
 }
 
 export async function getService(
@@ -71,7 +87,53 @@ export async function getService(
   serviceId: string,
 ) {
   const { svc } = await assertServiceAccess(ctx, projectId, serviceId);
-  return svc;
+  return withDrift(svc);
+}
+
+/**
+ * Accept the pending upstream compose change: apply `driftSpec` to the row's
+ * compose fields, advance the baseline to it, and clear the drift. Routing and
+ * `enabled` are untouched.
+ */
+export async function acceptServiceDrift(
+  ctx: RequestContext,
+  projectId: string,
+  serviceId: string,
+) {
+  const { svc } = await assertServiceAccess(ctx, projectId, serviceId);
+  const theirs = svc.driftSpec;
+  if (!theirs) return withDrift(svc);
+  await repos.service.update(serviceId, {
+    image: theirs.image ?? null,
+    build: theirs.build ?? null,
+    dockerfile: theirs.dockerfile ?? null,
+    ports: theirs.ports ?? [],
+    dependsOn: theirs.dependsOn ?? [],
+    environment: theirs.environment ?? {},
+    volumes: theirs.volumes ?? [],
+    command: theirs.command ?? null,
+    restart: theirs.restart ?? "unless-stopped",
+    importedSpec: theirs,
+    driftSpec: null,
+  });
+  const updated = await repos.service.findById(serviceId);
+  return withDrift(updated!);
+}
+
+/**
+ * Keep the user's edits: advance the baseline to the upstream spec (so it stops
+ * re-flagging on every deploy) WITHOUT changing the row's current values.
+ */
+export async function keepServiceDrift(
+  ctx: RequestContext,
+  projectId: string,
+  serviceId: string,
+) {
+  const { svc } = await assertServiceAccess(ctx, projectId, serviceId);
+  if (!svc.driftSpec) return withDrift(svc);
+  await repos.service.update(serviceId, { importedSpec: svc.driftSpec, driftSpec: null });
+  const updated = await repos.service.findById(serviceId);
+  return withDrift(updated!);
 }
 
 // ─── Create / Update ─────────────────────────────────────────────────────────
