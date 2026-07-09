@@ -36,6 +36,7 @@ import { backupsApi, getApiErrorMessage, type BackupPolicy } from "@/lib/api";
 import { PolicyEditor } from "@/components/backup/PolicyEditor";
 import { BackupRunCard } from "@/components/backup/BackupRunCard";
 import { ServiceTerminal } from "@/components/terminal/ServiceTerminal";
+import { useTheme } from "@/components/theme-provider";
 import { Tabs, type TabDef } from "@/components/ui/Tabs";
 import DropdownMenu from "@/components/ui/DropdownMenu";
 import { ServiceSettingsForm } from "./ServiceSettingsForm";
@@ -92,6 +93,7 @@ export function ServiceDetailPanel({
 }: ServiceDetailPanelProps) {
   const { baseDomain } = usePlatform();
   const { showToast } = useToast();
+  const { resolvedTheme } = useTheme();
   const { projectData, servicesData } = useProjectSettings();
   const router = useRouter();
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -540,6 +542,7 @@ export function ServiceDetailPanel({
                 <ServiceTerminal
                   serviceId={service.id}
                   enabled={true}
+                  theme={resolvedTheme === "light" ? "light" : "dark"}
                   resumeToken={terminalResumeToken}
                   onResumeTokenChange={persistResumeToken}
                 />

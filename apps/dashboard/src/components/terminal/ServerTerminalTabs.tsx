@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { ServerTerminal, type ServerTerminalHandle } from "./ServerTerminal";
+import { useTheme } from "@/components/theme-provider";
 
 interface ServerTerminalTabsProps {
   serverId: string;
@@ -105,6 +106,7 @@ export function ServerTerminalTabs({
   maxShells = 3,
   className = "",
 }: ServerTerminalTabsProps) {
+  const { resolvedTheme } = useTheme();
   // Seed from localStorage if a prior session left state for this
   // server. On first mount we either get { shells: [...], counter: N }
   // from prior runs, or we fall back to a single fresh "Shell 1". The
@@ -290,6 +292,7 @@ export function ServerTerminalTabs({
                 serverId={serverId}
                 enabled={enabled}
                 visible={isActive}
+                theme={resolvedTheme === "light" ? "light" : "dark"}
                 resumeToken={shell.resumeToken}
                 onResumeTokenChange={(token) =>
                   handleResumeTokenChange(shell.id, token)

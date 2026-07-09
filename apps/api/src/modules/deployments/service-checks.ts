@@ -1,4 +1,5 @@
 import { repos, type Project, type Deployment } from "@repo/db";
+import { isServiceSuccessStatus, isServiceFailureStatus } from "@repo/core";
 import { runtimeTarget } from "../../config";
 import { buildBackgroundContext } from "../../lib/request-context";
 import { createCheckRun, updateCheckRun } from "../github/github.service";
@@ -200,22 +201,17 @@ export async function emitInitialServiceChecks(
  *
  * `skipped` rows are not counted as failures — they're intentional.
  *
- * Tolerant of both the canonical (`success`/`failure`) and the live-runtime
- * (`running`/`failed`) vocabularies: the compose deploy path historically
- * wrote live-vocab rows, so counting only the canonical strings silently
- * rolled every partial failure up to `ready`. Reconcile (reconcile.service.ts)
- * already matches both — mirror that here.
+ * Classification of the per-service status vocabulary lives in @repo/core
+ * (service-status) so the rollup, the container-status endpoint, and the
+ * dashboard badges share ONE definition of success/failure and can't drift.
  */
-const SUCCESS_STATUSES = new Set(["success", "running", "ready"]);
-const FAILURE_STATUSES = new Set(["failure", "failed", "cancelled"]);
-
 export function rollupDeploymentStatus(
   perService: Array<{ status: string }>,
 ): "ready" | "partial_failure" | "failed" {
   const real = perService.filter((s) => s.status !== "skipped");
   if (real.length === 0) return "ready";
-  const successes = real.filter((s) => SUCCESS_STATUSES.has(s.status)).length;
-  const failures = real.filter((s) => FAILURE_STATUSES.has(s.status)).length;
+  const successes = real.filter((s) => isServiceSuccessStatus(s.status)).length;
+  const failures = real.filter((s) => isServiceFailureStatus(s.status)).length;
   if (failures === 0) return "ready";
   if (successes === 0) return "failed";
   return "partial_failure";

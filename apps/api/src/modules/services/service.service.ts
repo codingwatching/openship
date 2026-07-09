@@ -3,6 +3,7 @@
  */
 
 import { normalizeRoutingFields, repos, composeSpecDiff, type Service } from "@repo/db";
+import { serviceStatusToContainerState } from "@repo/core";
 import type { LogEntry } from "@repo/adapters";
 import { encrypt, decrypt } from "../../lib/encryption";
 import { assertResourceInOrg, platform } from "../../lib/controller-helpers";
@@ -480,7 +481,11 @@ export async function getActiveServiceContainers(ctx: RequestContext, projectId:
   const project = await repos.project.findById(projectId);
   assertResourceInOrg(project, "Project", ctx.organizationId, projectId);
   if (!project.activeDeploymentId) return [];
-  return repos.service.listByDeployment(project.activeDeploymentId);
+  const rows = await repos.service.listByDeployment(project.activeDeploymentId);
+  // The persisted deploy status → the live-ish container state the UI renders.
+  // Shared with the rollup + dashboard badges via @repo/core so a
+  // successfully-deployed service can't render as "Stopped" again.
+  return rows.map((row) => ({ ...row, status: serviceStatusToContainerState(row.status) }));
 }
 
 // ─── Per-service container actions ───────────────────────────────────────────
