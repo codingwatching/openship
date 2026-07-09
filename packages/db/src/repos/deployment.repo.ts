@@ -96,24 +96,32 @@ export function createDeploymentRepo(db: Database) {
     },
 
     /**
-     * Next per-project version, counting SUCCESSFUL releases only (a version is
+     * Next per-project version, counting SHIPPED releases only (a version is
      * a shipped commit, not a build attempt). Assigned in onSuccess; failed and
-     * in-flight deploys never consume a number. Safe against races because the
-     * one-in-flight-per-project unique index serializes deploys, so at most one
-     * reaches success at a time per project.
+     * in-flight deploys never consume a number. `partial_failure` counts too —
+     * it is a shipped-with-asterisk release that keeps its number, so a later
+     * fully-ready deploy can't be assigned a duplicate. Safe against races
+     * because the one-in-flight-per-project unique index serializes deploys, so
+     * at most one reaches success at a time per project.
      */
     async getNextReadyVersion(projectId: string): Promise<number> {
       const [row] = await db
         .select({ max: sql<number>`COALESCE(MAX(${deployment.version}), 0)` })
         .from(deployment)
-        .where(and(eq(deployment.projectId, projectId), eq(deployment.status, "ready")));
+        .where(
+          and(
+            eq(deployment.projectId, projectId),
+            inArray(deployment.status, ["ready", "partial_failure"]),
+          ),
+        );
       return Number(row?.max ?? 0) + 1;
     },
 
     /**
-     * The version already assigned to a SUCCESSFUL deploy of this exact commit,
+     * The version already assigned to a SHIPPED deploy of this exact commit,
      * if any. Versions are per-commit: redeploying the same commit reuses its
-     * number rather than burning a new one.
+     * number rather than burning a new one. `partial_failure` counts as shipped
+     * (consistent with getNextReadyVersion).
      */
     async findReadyVersionByCommit(
       projectId: string,
@@ -127,7 +135,7 @@ export function createDeploymentRepo(db: Database) {
           and(
             eq(deployment.projectId, projectId),
             eq(deployment.commitSha, commitSha),
-            eq(deployment.status, "ready"),
+            inArray(deployment.status, ["ready", "partial_failure"]),
             sql`${deployment.version} IS NOT NULL`,
           ),
         )

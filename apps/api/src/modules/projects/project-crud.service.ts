@@ -46,6 +46,25 @@ function readDeployMeta(dep: Deployment | null | undefined): {
   };
 }
 
+/** The live release's human version + state, surfaced on project cards so the
+ *  UI can show "which v is live" and flag a partial deploy that is still
+ *  awaiting the operator's keep/reject decision (`awaitingDecision`). Derived
+ *  from the active deployment row (already fetched by the enrich callers). */
+function readActiveDeploymentSummary(dep: Deployment | null | undefined): {
+  activeVersion: number | null;
+  activeDeploymentStatus: string | null;
+  awaitingDecision: boolean;
+} {
+  const meta = (dep?.meta ?? null) as {
+    composeDeployment?: { decision?: string };
+  } | null;
+  return {
+    activeVersion: dep?.version ?? null,
+    activeDeploymentStatus: dep?.status ?? null,
+    awaitingDecision: meta?.composeDeployment?.decision === "pending",
+  };
+}
+
 /** Enrich a project row with computed fields. `deployTarget` is the
  *  only signal the dashboard needs — `deployTarget === "cloud"` IS
  *  the cloud-project test; the dashboard combines it with its own
@@ -59,9 +78,10 @@ export async function enrichProject(p: Project) {
   let deployTarget: string | null = null;
   let serverId: string | null = null;
   let serverName: string | null = null;
+  let activeDep: Deployment | null = null;
   if (p.activeDeploymentId) {
-    const dep = await repos.deployment.findById(p.activeDeploymentId);
-    ({ deployTarget, serverId } = readDeployMeta(dep));
+    activeDep = (await repos.deployment.findById(p.activeDeploymentId)) ?? null;
+    ({ deployTarget, serverId } = readDeployMeta(activeDep));
     if (serverId) {
       const server = await repos.server.get(serverId);
       serverName = server?.name || server?.sshHost || null;
@@ -72,6 +92,7 @@ export async function enrichProject(p: Project) {
     ...p,
     deployTarget,
     serverName,
+    ...readActiveDeploymentSummary(activeDep),
     resources: encodeResources(production, build, p.sleepMode ?? "auto_sleep", p.port ?? 3000),
   };
 }
@@ -112,9 +133,10 @@ export async function enrichProjectsBatch(
     let deployTarget: string | null = null;
     let serverId: string | null = null;
     let serverName: string | null = null;
+    let activeDep: Deployment | null = null;
     if (p.activeDeploymentId) {
-      const dep = deployments.get(p.activeDeploymentId);
-      ({ deployTarget, serverId } = readDeployMeta(dep));
+      activeDep = deployments.get(p.activeDeploymentId) ?? null;
+      ({ deployTarget, serverId } = readDeployMeta(activeDep));
       if (serverId) {
         const server = servers.get(serverId);
         serverName = server?.name || server?.sshHost || null;
@@ -125,6 +147,7 @@ export async function enrichProjectsBatch(
       ...p,
       deployTarget,
       serverName,
+      ...readActiveDeploymentSummary(activeDep),
       resources: encodeResources(production, build, p.sleepMode ?? "auto_sleep", p.port ?? 3000),
     };
   });

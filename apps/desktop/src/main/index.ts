@@ -14,7 +14,7 @@
  *         └─ API (remote server, reached via HTTP)
  */
 
-import { app, BrowserWindow, shell, ipcMain, net, dialog, globalShortcut } from "electron";
+import { app, BrowserWindow, shell, ipcMain, net, dialog, globalShortcut, screen } from "electron";
 import { join } from "node:path";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { randomBytes, createHash } from "node:crypto";
@@ -22,14 +22,25 @@ import { hostname } from "node:os";
 import {
   CLOUD_API_URL as DEFAULT_CLOUD_API_URL,
   CLOUD_DASHBOARD_URL as DEFAULT_CLOUD_DASHBOARD_URL,
-  LOCAL_API_URL as DEFAULT_LOCAL_API_URL,
-  LOCAL_DASHBOARD_URL as DEFAULT_LOCAL_DASHBOARD_URL,
 } from "@repo/core";
 import {
   type SystemSettings,
   type TunnelConfig,
   buildSetupPayload,
 } from "@repo/onboarding";
+import {
+  getLocalApiUrl,
+  getLocalDashboardUrl,
+  startLocalServices,
+  stopLocalServices,
+} from "./services";
+import {
+  checkForUpdate,
+  downloadUpdate,
+  installUpdate,
+  type UpdateInfo,
+} from "./updater";
+import { closeUpdateWindow, getUpdateWindow, openUpdateWindow } from "./update-window";
 
 // ─── Persistent config ───────────────────────────────────────────────────────
 
@@ -48,8 +59,10 @@ interface AppConfig {
   dashboardUrl: string;
   /** Whether onboarding has been completed */
   onboardingComplete: boolean;
-  /** Window bounds for restore */
+  /** Window bounds for restore (normal/un-maximized bounds) */
   windowBounds?: { x: number; y: number; width: number; height: number };
+  /** Whether the window was maximized last close (default full-window) */
+  windowMaximized?: boolean;
   /** System-level settings - SSH creds, kept locally as backup */
   system?: SystemSettings;
   /** Tunnel configuration - pushed to API during onboarding */
@@ -158,9 +171,9 @@ async function pushInstanceSettings(
 const CLOUD_API_URL = DEFAULT_CLOUD_API_URL;
 const CLOUD_DASHBOARD_URL = DEFAULT_CLOUD_DASHBOARD_URL;
 
-// Local services for desktop cloud mode (API returns authMode:"cloud", dashboard redirects externally)
-const LOCAL_API_URL = DEFAULT_LOCAL_API_URL;
-const LOCAL_DASHBOARD_URL = DEFAULT_LOCAL_DASHBOARD_URL;
+// Local API/dashboard origins are DYNAMIC (chosen at launch by services.ts).
+// Always read them live via getLocalApiUrl()/getLocalDashboardUrl() — never
+// cache, since the ports differ each run.
 
 // ─── API readiness check ──────────────────────────────────────────────────────
 
@@ -187,19 +200,31 @@ async function waitForApi(apiUrl: string, maxAttempts = 30, intervalMs = 1000): 
 
 let mainWindow: BrowserWindow | null = null;
 
+/** The update found by the launch check, pending user action in the update window. */
+let pendingUpdate: UpdateInfo | null = null;
+
 function createWindow() {
   const bounds = store.get("windowBounds");
+  // Never open larger than the display (a previously-stored oversized bound, or
+  // a small screen, would otherwise make the window bigger than the desktop).
+  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize;
+  const width = Math.min(bounds?.width ?? 1200, screenW);
+  const height = Math.min(bounds?.height ?? 800, screenH);
 
   mainWindow = new BrowserWindow({
-    width: bounds?.width ?? 1400,
-    height: bounds?.height ?? 900,
+    width,
+    height,
     x: bounds?.x,
     y: bounds?.y,
-    minWidth: 900,
-    minHeight: 600,
+    minWidth: 800,
+    minHeight: 560,
     title: "Openship",
+    // Seamless native frame (like VS Code / Spotify): no OS title-bar strip,
+    // traffic lights inlaid top-left. The dashboard reserves top-left space +
+    // a drag region for them (see the `is-desktop` handling in the web app).
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    trafficLightPosition: { x: 16, y: 16 },
+    trafficLightPosition: { x: 16, y: 18 },
+    backgroundColor: "#ffffff", // light default — no dark flash while loading
     show: false, // Show after content is ready
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
@@ -209,17 +234,20 @@ function createWindow() {
     },
   });
 
+  // Full-window by default: maximize unless the user chose a non-maximized
+  // size last time.
+  if (store.get("windowMaximized") !== false) {
+    mainWindow.maximize();
+  }
+
   // Show the window once content is painted (avoids white flash)
   mainWindow.once("ready-to-show", () => {
     mainWindow?.show();
   });
 
-  // Decide what to load
-  if (store.get("onboardingComplete")) {
-    loadDashboard();
-  } else {
-    loadOnboarding();
-  }
+  // Paint a loading splash immediately. The real view (onboarding/dashboard)
+  // is routed by routeInitialView() once the local services are ready.
+  showLoading();
 
   // Open external links in the system browser
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -233,17 +261,19 @@ function createWindow() {
   mainWindow.webContents.on("did-navigate", (_e, url) => {
     const u = new URL(url);
     // desktop-login redirects to dashboard root - mark onboarding complete
-    if (!store.get("onboardingComplete") && u.pathname === "/" && u.origin === LOCAL_DASHBOARD_URL) {
+    if (!store.get("onboardingComplete") && u.pathname === "/" && u.origin === getLocalDashboardUrl()) {
       store.set("onboardingComplete", true);
-      store.set("apiUrl", LOCAL_API_URL);
-      store.set("dashboardUrl", LOCAL_DASHBOARD_URL);
+      store.set("apiUrl", getLocalApiUrl());
+      store.set("dashboardUrl", getLocalDashboardUrl());
     }
   });
 
-  // Save window position on close
+  // Save window state on close. Store the NORMAL (un-maximized) bounds so a
+  // maximized session doesn't persist a full-screen-sized "normal" window.
   mainWindow.on("close", () => {
     if (mainWindow) {
-      store.set("windowBounds", mainWindow.getBounds());
+      store.set("windowMaximized", mainWindow.isMaximized());
+      store.set("windowBounds", mainWindow.getNormalBounds());
     }
   });
 
@@ -254,32 +284,83 @@ function createWindow() {
 
 // ─── Loading strategies ──────────────────────────────────────────────────────
 
+/** Minimal inline splash shown while the bundled services boot (packaged app). */
+const LOADING_HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
+  html,body{margin:0;height:100%;background:#ffffff;color:#0f0f0f;
+    font-family:system-ui,-apple-system,sans-serif;display:flex;
+    align-items:center;justify-content:center}
+  .box{text-align:center}
+  .spinner{width:28px;height:28px;margin:0 auto 16px;border-radius:50%;
+    border:3px solid rgba(0,0,0,.12);border-top-color:#0f0f0f;
+    animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  p{font-size:14px;opacity:.55;margin:0}
+</style></head><body><div class="box">
+  <div class="spinner"></div><p>Starting Openship…</p>
+</div></body></html>`;
+
+function showLoading() {
+  if (!mainWindow) return;
+  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`);
+}
+
+/** Decide the first real view once services are up: onboarding vs dashboard. */
+function routeInitialView() {
+  if (store.get("onboardingComplete")) {
+    loadDashboard();
+  } else {
+    loadOnboarding();
+  }
+}
+
 function loadOnboarding() {
   if (!mainWindow) return;
   // Load the dashboard onboarding page - unified UI shared by desktop, CLI, and browser
-  mainWindow.loadURL(`${LOCAL_DASHBOARD_URL}/onboarding`);
+  mainWindow.loadURL(`${getLocalDashboardUrl()}/onboarding`);
 }
 
 function loadDashboard() {
   if (!mainWindow) return;
-  const dashboardUrl = store.get("dashboardUrl");
-  if (!dashboardUrl) {
-    loadOnboarding();
-    return;
-  }
-
-  mainWindow.loadURL(dashboardUrl).catch(() => {
+  // Always use the LIVE dashboard origin — the port is dynamic per launch, so
+  // any persisted dashboardUrl is stale. onboardingComplete is the real state.
+  mainWindow.loadURL(getLocalDashboardUrl()).catch(() => {
     store.set("onboardingComplete", false);
-    store.set("apiUrl", "");
-    store.set("dashboardUrl", "");
     loadOnboarding();
   });
 }
 
 // ─── App lifecycle ───────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
-  createWindow();
+app.whenReady().then(async () => {
+  createWindow(); // shows the loading splash immediately
+
+  // In a packaged build there are no external dev servers — boot the bundled
+  // API + dashboard ourselves before routing to the real view. In dev the
+  // servers run via `bun dev`, so we skip straight to routing.
+  if (app.isPackaged) {
+    try {
+      await startLocalServices(internalToken);
+    } catch (err) {
+      dialog.showErrorBox(
+        "Openship failed to start",
+        err instanceof Error ? err.message : String(err),
+      );
+      app.quit();
+      return;
+    }
+  }
+  routeInitialView();
+
+  // Background: ask GitHub if there's a newer release; if so, offer it. Never
+  // blocks launch — a failed/offline check just resolves to "no update".
+  if (app.isPackaged) {
+    void checkForUpdate().then((result) => {
+      if (result.available) {
+        pendingUpdate = result;
+        openUpdateWindow(mainWindow, result);
+      }
+    });
+  }
 
   // Dev shortcut: Cmd/Ctrl+Shift+F12 → reset to onboarding
   globalShortcut.register("CommandOrControl+Shift+F12", () => {
@@ -294,6 +375,7 @@ app.whenReady().then(() => {
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+      routeInitialView();
     }
   });
 });
@@ -302,6 +384,41 @@ app.on("window-all-closed", () => {
   globalShortcut.unregisterAll();
   if (process.platform !== "darwin") {
     app.quit();
+  }
+});
+
+// Tear down the bundled services when the app actually quits.
+app.on("before-quit", () => {
+  stopLocalServices();
+});
+
+// ─── IPC: Updates ─────────────────────────────────────────────────────────────
+
+ipcMain.handle("update:dismiss", () => {
+  closeUpdateWindow();
+  return true;
+});
+
+ipcMain.handle("update:start", async () => {
+  if (!pendingUpdate) return false;
+  const win = getUpdateWindow();
+  try {
+    const file = await downloadUpdate(pendingUpdate.asset, (f) => {
+      win?.webContents.send("update:progress", f);
+      mainWindow?.setProgressBar(f); // Dock / taskbar indicator
+    });
+    win?.webContents.send("update:done");
+    mainWindow?.setProgressBar(-1); // clear
+    stopLocalServices();
+    installUpdate(file); // quits + relaunches on the new version (or opens installer)
+    return true;
+  } catch (err) {
+    mainWindow?.setProgressBar(-1);
+    win?.webContents.send(
+      "update:error",
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
   }
 });
 
@@ -331,7 +448,7 @@ ipcMain.handle("app:cloud-urls", () => {
 });
 
 ipcMain.handle("app:local-urls", () => {
-  return { api: LOCAL_API_URL, dashboard: LOCAL_DASHBOARD_URL };
+  return { api: getLocalApiUrl(), dashboard: getLocalDashboardUrl() };
 });
 
 // ─── IPC: Navigation ────────────────────────────────────────────────────────
@@ -348,13 +465,16 @@ ipcMain.handle(
   "onboarding:complete",
   async (
     _event,
-    apiUrl: string,
-    dashboardUrl: string,
+    _apiUrl: string,
+    _dashboardUrl: string,
     sshPayload?: SystemSettings,
     buildMode?: string,
   ) => {
+    // The main process owns the real (dynamic) local origins — don't trust the
+    // renderer-supplied URLs.
+    const apiUrl = getLocalApiUrl();
     store.set("apiUrl", apiUrl);
-    store.set("dashboardUrl", dashboardUrl);
+    store.set("dashboardUrl", getLocalDashboardUrl());
     store.set("onboardingComplete", true);
 
     // Keep SSH creds locally as backup
@@ -397,13 +517,13 @@ ipcMain.handle("onboarding:cloud-auth", async () => {
   if (!mainWindow) return { ok: false, error: "No window" };
 
   // Wait for API to be available
-  const apiReady = await waitForApi(LOCAL_API_URL);
+  const apiReady = await waitForApi(getLocalApiUrl());
   if (!apiReady) {
     return { ok: false, error: "api_unavailable" };
   }
 
   // Push authMode before auth so env returns "cloud"
-  await pushInstanceSettings(LOCAL_API_URL, {
+  await pushInstanceSettings(getLocalApiUrl(), {
     authMode: "cloud",
     buildMode: "auto",
   });
@@ -416,7 +536,7 @@ ipcMain.handle("onboarding:cloud-auth", async () => {
 
   // Register with API (authenticated with internal token)
   try {
-    const res = await net.fetch(`${LOCAL_API_URL}/api/auth/desktop-auth-start`, {
+    const res = await net.fetch(`${getLocalApiUrl()}/api/auth/desktop-auth-start`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -432,7 +552,7 @@ ipcMain.handle("onboarding:cloud-auth", async () => {
 
   // Open the authorize page in the system browser - if not logged in,
   // it redirects to login first, then back to authorize after auth.
-  const callbackUrl = `${LOCAL_API_URL}/api/auth/cloud-callback`;
+  const callbackUrl = `${getLocalApiUrl()}/api/auth/cloud-callback`;
   const machine = hostname();
   const cloudAuthUrl = `${CLOUD_DASHBOARD_URL}/authorize?callback=${encodeURIComponent(callbackUrl)}&app=${encodeURIComponent("Openship Desktop")}&machine=${encodeURIComponent(machine)}&state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(codeChallenge)}&flow=desktop-cloud`;
   shell.openExternal(cloudAuthUrl);
@@ -452,7 +572,7 @@ ipcMain.handle("onboarding:cloud-auth-poll", async (_event, nonce: string) => {
 
   try {
     const res = await net.fetch(
-      `${LOCAL_API_URL}/api/auth/desktop-auth-poll?nonce=${encodeURIComponent(nonce)}`,
+      `${getLocalApiUrl()}/api/auth/desktop-auth-poll?nonce=${encodeURIComponent(nonce)}`,
       { signal: AbortSignal.timeout(5000) },
     );
     const data = (await res.json()) as { status: string; claimCode?: string };
@@ -460,19 +580,26 @@ ipcMain.handle("onboarding:cloud-auth-poll", async (_event, nonce: string) => {
     if (data.status === "resolved" && data.claimCode) {
       // Navigate to the claim endpoint - it sets the cookie via HTTP
       // Set-Cookie header and redirects to the dashboard.
-      const claimUrl = `${LOCAL_API_URL}/api/auth/desktop-claim?code=${encodeURIComponent(data.claimCode)}`;
+      const claimUrl = `${getLocalApiUrl()}/api/auth/desktop-claim?code=${encodeURIComponent(data.claimCode)}`;
 
       // Listen for dashboard load to mark onboarding complete
       const onNavigate = (_e: unknown, url: string) => {
-        if (url.startsWith(LOCAL_DASHBOARD_URL)) {
-          store.set("apiUrl", LOCAL_API_URL);
-          store.set("dashboardUrl", LOCAL_DASHBOARD_URL);
+        if (url.startsWith(getLocalDashboardUrl())) {
+          store.set("apiUrl", getLocalApiUrl());
+          store.set("dashboardUrl", getLocalDashboardUrl());
           store.set("onboardingComplete", true);
           mainWindow?.webContents.removeListener("did-navigate", onNavigate);
         }
       };
       mainWindow.webContents.on("did-navigate", onNavigate);
       mainWindow.loadURL(claimUrl);
+
+      // Bring the desktop app back to the front (the browser had focus for the
+      // cloud sign-in) — like VS Code re-focusing after an external auth.
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      app.focus({ steal: true });
 
       return { status: "resolved" };
     }
@@ -500,7 +627,7 @@ ipcMain.handle("onboarding:cloud-auth-poll", async (_event, nonce: string) => {
 ipcMain.handle("cloud:connect", async () => {
   if (!mainWindow) return { ok: false, error: "No window" };
 
-  const apiReady = await waitForApi(LOCAL_API_URL);
+  const apiReady = await waitForApi(getLocalApiUrl());
   if (!apiReady) {
     return { ok: false, error: "api_unavailable" };
   }
@@ -513,7 +640,7 @@ ipcMain.handle("cloud:connect", async () => {
 
   // Register with API
   try {
-    const res = await net.fetch(`${LOCAL_API_URL}/api/auth/desktop-auth-start`, {
+    const res = await net.fetch(`${getLocalApiUrl()}/api/auth/desktop-auth-start`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -527,7 +654,7 @@ ipcMain.handle("cloud:connect", async () => {
     return { ok: false, error: "nonce_registration_failed" };
   }
 
-  const callbackUrl = `${LOCAL_API_URL}/api/auth/cloud-callback`;
+  const callbackUrl = `${getLocalApiUrl()}/api/auth/cloud-callback`;
   const machine = hostname();
   const cloudAuthUrl = `${CLOUD_DASHBOARD_URL}/authorize?callback=${encodeURIComponent(callbackUrl)}&app=${encodeURIComponent("Openship Desktop")}&machine=${encodeURIComponent(machine)}&state=${encodeURIComponent(state)}&code_challenge=${encodeURIComponent(codeChallenge)}&flow=desktop-cloud`;
   shell.openExternal(cloudAuthUrl);
@@ -547,7 +674,7 @@ ipcMain.handle("cloud:connect-poll", async (_event, nonce: string) => {
 
   try {
     const res = await net.fetch(
-      `${LOCAL_API_URL}/api/auth/desktop-auth-poll?nonce=${encodeURIComponent(nonce)}`,
+      `${getLocalApiUrl()}/api/auth/desktop-auth-poll?nonce=${encodeURIComponent(nonce)}`,
       { signal: AbortSignal.timeout(5000) },
     );
     const data = (await res.json()) as { status: string; claimCode?: string };
@@ -555,6 +682,13 @@ ipcMain.handle("cloud:connect-poll", async (_event, nonce: string) => {
     if (data.status === "resolved") {
       // Cloud session token is already stored server-side by cloud-callback.
       // No need to navigate or claim - just tell the renderer to refresh status.
+      // Re-focus the desktop app (the browser had focus during sign-in).
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+      app.focus({ steal: true });
       return { status: "resolved" };
     }
 
@@ -591,7 +725,7 @@ ipcMain.handle("system:browse-folder", async () => {
 
 ipcMain.handle("system:get-settings", async () => {
   // Read from API (source of truth), fall back to local ConfigStore
-  const apiUrl = store.get("apiUrl");
+  const apiUrl = getLocalApiUrl();
   if (apiUrl) {
     try {
       const res = await net.fetch(`${apiUrl}/api/system/setup`, {
@@ -617,7 +751,7 @@ ipcMain.handle(
     store.set("system", { ...current, ...settings });
 
     // Also push to API so both stores stay in sync
-    const apiUrl = store.get("apiUrl");
+    const apiUrl = getLocalApiUrl();
     if (apiUrl) {
       try {
         await net.fetch(`${apiUrl}/api/system/setup`, {

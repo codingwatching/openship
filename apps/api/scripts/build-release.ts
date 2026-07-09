@@ -297,9 +297,9 @@ const dashboardPort = process.env.DASHBOARD_PORT ?? "3000";
 type Child = ReturnType<typeof spawn>;
 const children: Child[] = [];
 
-function start(name: string, cmd: string, args: string[], env: Record<string, string>): Child {
+function start(name: string, cmd: string, args: string[], cwd: string, env: Record<string, string>): Child {
   const child = spawn(cmd, args, {
-    cwd: ROOT,
+    cwd,
     stdio: "inherit",
     env: { ...process.env, ...env },
   });
@@ -326,16 +326,22 @@ function shutdown(code: number): void {
 process.on("SIGTERM", () => shutdown(0));
 process.on("SIGINT", () => shutdown(0));
 
-start("api", "bun", ["run", "src/index.ts"], {
+// API: raw TS run by bun, from the api/ subdir (its package.json + the
+// hoisted node_modules resolve from there).
+start("api", "bun", ["run", "src/index.ts"], join(ROOT, "api"), {
   PORT: apiPort,
   // Dashboard talks to the API over loopback in this layout.
   API_INTERNAL_URL: \`http://127.0.0.1:\${apiPort}\`,
 });
 
+// Dashboard: Next standalone. The monorepo-rooted standalone lands at
+// dashboard/apps/dashboard/server.js and expects to run from that dir so its
+// relative .next/ + public/ + node_modules resolve.
 start(
   "dashboard",
   "node",
-  [join(ROOT, "dashboard", "server.js")],
+  ["server.js"],
+  join(ROOT, "dashboard", "apps", "dashboard"),
   {
     PORT: dashboardPort,
     HOSTNAME: "0.0.0.0",
@@ -411,8 +417,19 @@ async function main(): Promise<void> {
   // 1. Build the dashboard. next.config.mjs already sets
   //    `output: "standalone"`, so .next/standalone/ contains a fully
   //    runnable server.js + a trimmed node_modules.
+  //
+  //    Force NODE_ENV=production: this runs via `bun run --cwd apps/api …`,
+  //    and bun auto-loads apps/api/.env which sets NODE_ENV=development. A
+  //    dev NODE_ENV leaking into `next build` loads React's dev build during
+  //    the prod prerender → "/_global-error" crashes with a null useContext.
+  //    The release is always a production, self-hosted (local, non-cloud)
+  //    build regardless of the developer's ambient env.
   await step("building dashboard (next build, standalone)", async () => {
-    await run("bun run build", DASHBOARD_DIR);
+    await run("bun run build", DASHBOARD_DIR, {
+      NODE_ENV: "production",
+      CLOUD_MODE: "false",
+      OPENSHIP_TARGET: "local",
+    });
   });
 
   const dashboardStandalone = join(DASHBOARD_DIR, ".next/standalone");

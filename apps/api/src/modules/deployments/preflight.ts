@@ -37,6 +37,30 @@ import {
 import { canResolveTokenFor } from "../github/github.token";
 import { resolveRecords, lookupAddresses } from "../../lib/dns-resolver";
 import { type RequestContext } from "../../lib/request-context";
+import { repos } from "@repo/db";
+
+/**
+ * Hostnames this project already holds on the routing edge, so a redeploy
+ * reclaiming one of them is NOT a conflict (the availability check exists to
+ * catch collisions with OTHER projects). Gated on `activeDeploymentId`: domain
+ * rows are written at project create/config time (persistProjectRouteState),
+ * so their mere existence does NOT mean the slug was claimed — only a project
+ * that has actually deployed owns its routes on the edge. A never-deployed
+ * project therefore still runs the real availability check (no first-deploy
+ * conflict masking). Best-effort: any lookup failure yields an empty set, so
+ * the availability check runs.
+ */
+async function projectLiveHostnames(projectId: string | undefined): Promise<Set<string>> {
+  if (!projectId) return new Set();
+  try {
+    const project = await repos.project.findById(projectId);
+    if (!project?.activeDeploymentId) return new Set();
+    const domains = await repos.domain.listByProject(projectId);
+    return new Set(domains.map((d) => d.hostname.toLowerCase()));
+  } catch {
+    return new Set();
+  }
+}
 
 export interface PreflightCheck {
   id: string;
@@ -347,6 +371,7 @@ async function checkPublicEndpoints(
   endpoints: NonNullable<PreflightOptions["publicEndpoints"]>,
   cloud: CloudPreflightData | null,
   ctx?: RequestContext,
+  projectId?: string,
 ): Promise<PreflightCheck[]> {
   const plat = platform();
   const effectiveTarget = resolveEffectiveTarget(plat.target, snapshot);
@@ -479,6 +504,9 @@ async function checkPublicEndpoints(
     if (canBridgeCloud) lookups.push({ kind: "slug", index, label, slug });
   });
 
+  // Subdomains this project already holds live — fetched once, not per endpoint.
+  const ownedLive = await projectLiveHostnames(projectId);
+
   const resolved = await Promise.all(
     lookups.map(async (lk): Promise<PreflightCheck> => {
       if (lk.kind === "custom") {
@@ -489,6 +517,15 @@ async function checkPublicEndpoints(
           : cloud;
         const result = await checkCustomDomain(lk.hostname, endpointCloud, snapshot);
         return { ...result, id: `endpoint-${lk.index}-domain`, label: `Endpoint domain (${lk.label})` };
+      }
+      // Redeploy reclaiming a subdomain this project already holds live is not
+      // a conflict — skip the cloud availability probe entirely for it.
+      if (ownedLive.has(`${lk.slug}.${baseDomain}`.toLowerCase())) {
+        return {
+          id: `endpoint-${lk.index}-availability`,
+          label: `Endpoint availability (${lk.label})`,
+          status: "pass",
+        };
       }
       const endpointCloud = await requestCloudPreflight(snapshot, { slug: lk.slug });
       const availability = await checkSlug(lk.slug, endpointCloud);
@@ -1105,7 +1142,14 @@ export async function runPreflightChecks(
 
   if (!hasEndpointRouting && opts?.slug && !opts?.customDomain) {
     checks.push(checkSlugFormat(opts.slug));
-    checks.push(await checkSlug(opts.slug, cloudPreflight));
+    const fqdn = `${opts.slug}.${getRoutingBaseDomain()}`.toLowerCase();
+    const ownedLive = await projectLiveHostnames(opts.projectId);
+    if (ownedLive.has(fqdn)) {
+      // Redeploy reclaiming its own subdomain — not a conflict.
+      checks.push({ id: "slug-available", label: "Subdomain availability", status: "pass" });
+    } else {
+      checks.push(await checkSlug(opts.slug, cloudPreflight));
+    }
   }
 
   // Only the null-preflight + cloud-required case needs to know whether the
@@ -1205,7 +1249,7 @@ export async function runPreflightChecks(
   }
 
   if (opts?.publicEndpoints?.length) {
-    checks.push(...(await checkPublicEndpoints(snapshot, opts.publicEndpoints, cloudPreflight, opts.ctx)));
+    checks.push(...(await checkPublicEndpoints(snapshot, opts.publicEndpoints, cloudPreflight, opts.ctx, opts.projectId)));
   }
 
   // Catch the "this deploy will have no public URL" foot-gun: self-hosted,

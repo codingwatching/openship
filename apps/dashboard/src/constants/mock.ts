@@ -35,6 +35,12 @@ export interface Project {
   activeDeploymentId?: string | null;
   latestDeploymentId?: string | null;
   latestDeploymentStatus?: string | null;
+  /** Human version (v1, v2, …) of the live release — from the active deployment. */
+  activeVersion?: number | null;
+  /** Status of the live release (e.g. `partial_failure`). */
+  activeDeploymentStatus?: string | null;
+  /** True when the live release is a partial-failure deploy awaiting keep/reject. */
+  awaitingDecision?: boolean | null;
   serviceCount?: number;
   hasMultipleServices?: boolean;
   /** Set once soft-deleted; in practice teardown hard-deletes, so the list

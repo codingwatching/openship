@@ -126,6 +126,11 @@ export const deployApi = {
   reject: (id: string) =>
     api.post<any>(endpoints.deploy.reject(id)),
 
+  /** Keep (confirm) a partial deployment that is awaiting a decision — clears
+   *  the pending marker so it stops reading as "Action Required". */
+  keep: (id: string) =>
+    api.post<any>(endpoints.deploy.keep(id)),
+
   /** Roll back to a previous successful deployment. The orchestrator
    *  validates artifact-retained + not-already-active before swapping. */
   rollback: (id: string) =>

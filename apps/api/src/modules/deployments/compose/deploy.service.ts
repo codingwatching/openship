@@ -488,7 +488,7 @@ export async function deployComposeServices(
           serviceId: svc.id,
           serviceName: svc.name,
           containerId: carried.containerId,
-          status: carried.status,
+          status: "success",
           imageRef: carried.imageRef ?? null,
           hostPort: carriedHostPort,
           ip: carriedIp,
@@ -539,7 +539,7 @@ export async function deployComposeServices(
       await repos.service.createServiceDeployment({
         deploymentId: dep.id,
         serviceId: svc.id,
-        status: "failed",
+        status: "failure",
         imageRef: opts?.builtImages?.get(svc.id) ?? svc.image ?? null,
       });
       results.push({
@@ -586,7 +586,7 @@ export async function deployComposeServices(
       await repos.service.createServiceDeployment({
         deploymentId: dep.id,
         serviceId: svc.id,
-        status: "failed",
+        status: "failure",
         imageRef: svc.image ?? null,
       });
       results.push({
@@ -620,7 +620,7 @@ export async function deployComposeServices(
       await repos.service.createServiceDeployment({
         deploymentId: dep.id,
         serviceId: svc.id,
-        status: "failed",
+        status: "failure",
       });
       results.push({
         serviceId: svc.id,
@@ -787,7 +787,7 @@ export async function deployComposeServices(
         deploymentId: dep.id,
         serviceId: svc.id,
         containerId: result.containerId,
-        status: result.status,
+        status: "success",
         imageRef: image,
         hostPort: result.hostPort ?? null,
         ip: result.ip ?? null,
@@ -925,7 +925,7 @@ export async function deployComposeServices(
         await repos.service.createServiceDeployment({
           deploymentId: dep.id,
           serviceId: svc.id,
-          status: "failed",
+          status: "failure",
           imageRef: image,
         });
 

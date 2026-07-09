@@ -282,13 +282,27 @@ async function finalizeComposeDeploy(opts: {
       const perService = await repos.serviceDeployment.listByDeployment(dep.id);
       const rolled = rollupDeploymentStatus(perService);
       if (rolled === "partial_failure") {
-        // partial_failure is a DB-only concept; SSE stays "ready" (the
-        // dashboard reads partial_failure off the row) and surfaces the
-        // partial as a live warning banner.
+        // A partial failure is held for an explicit user decision: it must NOT
+        // read as a clean "Deployed". Persist `decision: "pending"` on the meta
+        // block (survives refresh; drives the "Action Required" banner + modal)
+        // until the user keeps or rejects it. SSE stays "ready" (the succeeded
+        // containers are already live in-place); the dashboard reads the
+        // partial_failure row + pending marker for the real state.
+        const meta = (finalDep.meta as Record<string, unknown> | null) ?? {};
+        const existingCompose =
+          (meta.composeDeployment as Record<string, unknown> | undefined) ?? {};
+        const composeDeployment: Record<string, unknown> = {
+          ...existingCompose,
+          decision: "pending",
+        };
+        const warningMessage =
+          (composeDeployment.warningMessage as string | undefined) ||
+          "Some services failed — see service deployments for details.";
         await setDeploymentStatus(dep.id, "partial_failure", {
+          extra: { meta: { ...meta, composeDeployment } },
           sse: {
             status: "ready",
-            meta: { warningMessage: "Some services failed — see service deployments for details." },
+            meta: { warningMessage },
           },
         });
       } else if (rolled === "failed") {
@@ -302,7 +316,11 @@ async function finalizeComposeDeploy(opts: {
         if (!sd.serviceName) continue;
         if (sd.status === "skipped") continue; // already emitted up front
         const conclusion =
-          sd.status === "success" ? "success" : sd.status === "cancelled" ? "cancelled" : "failure";
+          sd.status === "success" || sd.status === "running"
+            ? "success"
+            : sd.status === "cancelled"
+              ? "cancelled"
+              : "failure";
         await emitServiceCheckRun({
           project,
           dep,
@@ -1137,7 +1155,7 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
     return;
   }
 
-  await runPostDeploySync({
+  const postSync = await runPostDeploySync({
     plannedDomains,
     obsoleteProjectDomains,
     routing,
@@ -1155,6 +1173,15 @@ async function executeServerDeploy(phase: DeployPhaseInputs): Promise<void> {
     containerId: deployResult.containerId!,
     url: deployResult.url,
     durationMs: buildResult.durationMs ?? 0,
+    // Surface a free-domain edge-sync failure so the deploy doesn't read as
+    // cleanly green with a dead .opsh.io URL. Live via SSE + persisted on meta
+    // so it survives a refresh (build-status reads meta.deployWarning).
+    ...(postSync.warningMessage
+      ? {
+          warningMessage: postSync.warningMessage,
+          metaPatch: { deployWarning: postSync.warningMessage },
+        }
+      : {}),
   });
 
   // FINAL STEP (desktop-only, best-effort): mirror this project onto the
@@ -1185,11 +1212,17 @@ async function runPostDeploySync(opts: {
   organizationId: string;
   serverId?: string;
   logger: BuildLogger;
-}): Promise<void> {
+}): Promise<{ warningMessage?: string }> {
   const {
     plannedDomains, obsoleteProjectDomains, routing, usesManagedRouting,
     organizationId, serverId, logger,
   } = opts;
+
+  // Collect free-domain edge-sync failures so a self-hosted + free-.opsh.io
+  // deploy that comes up locally but whose cloud edge route didn't wire is
+  // surfaced as a deployment warning — not just a buried log line that leaves
+  // the operator with a green deploy and a dead URL.
+  const edgeFailures: string[] = [];
 
   if (usesManagedRouting) {
     for (const domain of plannedDomains.filter((d) => d.isCloud && d.managedSubdomain)) {
@@ -1200,8 +1233,10 @@ async function runPostDeploySync(opts: {
       try {
         await ensureManagedEdgeProxy(organizationId, domain.managedSubdomain!, { serverId });
       } catch (err) {
+        const reason = safeErrorMessage(err);
+        edgeFailures.push(`${domain.hostname} (${reason})`);
         logger.log(
-          `Warning: could not sync managed edge proxy for ${domain.hostname}: ${safeErrorMessage(err)}. ` +
+          `Warning: could not sync managed edge proxy for ${domain.hostname}: ${reason}. ` +
             `The deployment is live; this only affects the free ${domain.hostname} URL.\n`,
           "warn",
         );
@@ -1226,4 +1261,12 @@ async function runPostDeploySync(opts: {
   // Previous-image GC moved to the RollbackOrchestrator. It archives
   // the prev image (not destroys it) so rollback stays possible, and
   // prunes beyond rollbackWindow + skips pinned.
+
+  if (edgeFailures.length === 0) return {};
+  return {
+    warningMessage:
+      `Deployed, but the free domain routing didn't sync for ${edgeFailures.join(", ")}. ` +
+      `The app is live on the server; the free .opsh.io URL won't resolve until the edge route is created. ` +
+      `Check that the server is reachable from Openship Cloud on port 80, then redeploy to retry.`,
+  };
 }

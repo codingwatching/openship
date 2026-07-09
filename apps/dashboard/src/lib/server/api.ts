@@ -117,7 +117,12 @@ type ServerRequestOptions = {
  */
 function getServerApiBaseUrl(requestHeaders: Headers): string {
   let origin: string;
-  if (process.env.NEXT_PUBLIC_API_PROXY === "true") {
+  // Desktop: the API runs on a dynamic port Electron injects here. Wins over
+  // the header→table fallback (which can't know a dynamic port).
+  const localOverride = process.env.OPENSHIP_LOCAL_API_URL?.replace(/\/+$/, "");
+  if (localOverride) {
+    origin = localOverride;
+  } else if (process.env.NEXT_PUBLIC_API_PROXY === "true") {
     const internal = process.env.INTERNAL_API_URL;
     if (internal) {
       origin = internal.replace(/\/+$/, "");

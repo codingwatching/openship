@@ -548,6 +548,12 @@ export interface DeploymentState {
   deploymentCanceled: boolean;
   failureMessage: string;
   warningMessage: string;
+  /**
+   * A partial-failure deploy is held for an explicit keep/reject decision.
+   * Server-backed (from getBuildStatus.decisionPending) so the "Action
+   * Required" banner + modal reappear after a refresh, until the user acts.
+   */
+  decisionPending: boolean;
   errorCode: string;
   errorDetails: Record<string, unknown> | null;
   buildLogs: BuildLog[];
@@ -597,6 +603,7 @@ export const INITIAL_STATE: DeploymentState = {
   deploymentCanceled: false,
   failureMessage: "",
   warningMessage: "",
+  decisionPending: false,
   errorCode: "",
   errorDetails: null,
   buildLogs: [],

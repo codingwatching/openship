@@ -206,8 +206,27 @@ export async function getBuildSessionStatus(deploymentId: string) {
     buildDurationMs: buildSessionRow?.durationMs ?? null,
     buildStartedAt: buildSessionRow?.startedAt?.toISOString() ?? null,
     failureMessage: effectiveStatus === "failed" ? dep.errorMessage || "" : "",
+    // Surface the partial-deploy warning for any settled-but-not-failed state
+    // (ready / partial_failure / reconciling) so it survives a refresh in a new
+    // tab, not just while the SSE session says "ready".
     warningMessage:
-      effectiveStatus === "ready" ? snapshot?.composeDeployment?.warningMessage || "" : "",
+      effectiveStatus !== "failed" && effectiveStatus !== "cancelled"
+        ? snapshot?.composeDeployment?.warningMessage || snapshot?.deployWarning || ""
+        : "",
+    // Real persisted status (dep.status carries partial_failure; `status` above
+    // stays SSE-facing "ready" so the build page still renders as finished) plus
+    // the server-backed keep/reject decision so the "Action Required" banner +
+    // modal reappear after a refresh, until the user keeps or rejects.
+    deploymentStatus: dep.status,
+    decisionPending: snapshot?.composeDeployment?.decision === "pending",
+    partial: snapshot?.composeDeployment
+      ? {
+          total: snapshot.composeDeployment.totalServices,
+          successful: snapshot.composeDeployment.successfulServices,
+          failed: snapshot.composeDeployment.failedServices,
+          failedServiceNames: snapshot.composeDeployment.failedServiceNames ?? [],
+        }
+      : null,
     previousActiveDeploymentId: snapshot?.previousActiveDeploymentId ?? null,
     errorCode:
       dep.errorMessage?.includes("PORT_IN_USE") || dep.errorMessage?.includes("EADDRINUSE")

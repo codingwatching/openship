@@ -6,7 +6,7 @@
     "openship": "./dist/index.js"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean",
+    "build": "tsup",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist .turbo node_modules"
   },

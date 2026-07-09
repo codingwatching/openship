@@ -199,6 +199,19 @@ export async function reject(c: Context) {
   }
 }
 
+export async function keep(c: Context) {
+  const ctx = getRequestContext(c);
+  const id = param(c, "id");
+  await permission.assert(getRequestContext(c), { resourceType: "deployment", resourceId: id, action: "write" });
+  try {
+    const result = await deploymentService.keepDeployment(id, ctx.organizationId);
+    return c.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to keep deployment";
+    return c.json({ success: false, error: message }, 400);
+  }
+}
+
 export async function cancel(c: Context) {
   const ctx = getRequestContext(c);
   const id = param(c, "id");

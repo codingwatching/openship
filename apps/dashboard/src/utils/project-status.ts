@@ -1,5 +1,6 @@
 export type ProjectStatus =
   | "live"
+  | "attention"
   | "queued"
   | "building"
   | "deploying"
@@ -11,6 +12,10 @@ export type ProjectStatus =
 type ProjectStatusSource = {
   activeDeploymentId?: string | null;
   latestDeploymentStatus?: string | null;
+  /** True when the live release is a partial-failure deploy still awaiting the
+   *  operator's keep/reject decision — surfaced as "Action Required", never
+   *  "Live". */
+  awaitingDecision?: boolean | null;
   deletedAt?: string | null;
   /** True while an atomic teardown is in flight (the real in-progress flag;
    *  teardown hard-deletes on success, so `deletedAt` is rarely set). */
@@ -25,6 +30,11 @@ export const PROJECT_STATUS_META: Record<
     label: "Live",
     badge: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
     dot: "bg-emerald-500",
+  },
+  attention: {
+    label: "Action Required",
+    badge: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
+    dot: "bg-amber-500",
   },
   queued: {
     label: "Queued",
@@ -77,6 +87,12 @@ export function getProjectStatus(project: ProjectStatusSource): ProjectStatus {
       return "deploying";
     default:
       break;
+  }
+
+  // A live release that's a partial-failure deploy still awaiting a keep/reject
+  // decision is flagged "Action Required" — never the green "Live".
+  if (project.awaitingDecision) {
+    return "attention";
   }
 
   if (project.activeDeploymentId) {

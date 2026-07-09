@@ -1,6 +1,6 @@
 "use client";
 
-import { LOCAL_API_URL, LOCAL_DASHBOARD_URL } from "@repo/core";
+import { getApiOrigin } from "@/lib/api/urls";
 import type { StepProps } from "./step-props";
 
 /* ── Inline SVGs matching old design ── */
@@ -63,8 +63,8 @@ export function SelfhostChoiceStep({ onUpdate, onNext, onBack }: StepProps) {
             onClick={() => {
               onUpdate({
                 hostingMode: "local",
-                apiUrl: LOCAL_API_URL,
-                dashboardUrl: LOCAL_DASHBOARD_URL,
+                apiUrl: getApiOrigin(),
+                dashboardUrl: window.location.origin,
                 buildMode: "local",
                 ssh: undefined,
               });

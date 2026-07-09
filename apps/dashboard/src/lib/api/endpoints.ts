@@ -83,6 +83,7 @@ export const endpoints = {
     list: "deployments",
     delete: (id: string) => `deployments/${id}`,
     reject: (id: string) => `deployments/${id}/reject`,
+    keep: (id: string) => `deployments/${id}/keep`,
     rollback: (id: string) => `deployments/${id}/rollback`,
     cancel: (id: string) => `deployments/${id}/cancel`,
     prepare: "deployments/prepare",

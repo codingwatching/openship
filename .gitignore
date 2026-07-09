@@ -8,6 +8,12 @@ dist/
 .next-saas/
 .turbo/
 out/
+# Self-hosted server release bundle (apps/api/scripts/build-release.ts)
+apps/api/release-dist/
+# Desktop staged payload (apps/desktop/build/stage.ts)
+apps/desktop/resources/
+# bun build --compile scratch/leftover binaries
+*.bun-build
 
 # Environment
 .env

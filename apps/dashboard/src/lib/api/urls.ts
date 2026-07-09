@@ -72,6 +72,24 @@ function sameOriginProxyOrigin(): string | null {
   return ssrOrigin ?? null;
 }
 
+// ─── Dynamic local API origin (desktop) ─────────────────────────────────────
+//
+// The desktop app runs the API on a DYNAMIC free port that isn't in the static
+// runtime-target table, so origin-based resolution can't find it. Electron sets
+// `OPENSHIP_LOCAL_API_URL` on the dashboard server; the root layout mirrors it
+// into `window.__OPENSHIP_API_ORIGIN__` for the browser bundle (whose base URL
+// is a module-load constant — a build-time NEXT_PUBLIC var can't carry it).
+
+function localApiOverride(): string | null {
+  if (typeof window !== "undefined") {
+    const injected = (window as { __OPENSHIP_API_ORIGIN__?: string })
+      .__OPENSHIP_API_ORIGIN__;
+    return injected ? injected.replace(/\/+$/, "") : null;
+  }
+  const env = process.env.OPENSHIP_LOCAL_API_URL;
+  return env ? env.replace(/\/+$/, "") : null;
+}
+
 // ─── Public exports ─────────────────────────────────────────────────────────
 
 export function getRequestOriginFromHeaders(headers: Pick<Headers, "get">) {
@@ -90,6 +108,8 @@ export function getApiOrigin(rawUrl?: string) {
   if (!rawUrl) {
     const proxied = sameOriginProxyOrigin();
     if (proxied) return proxied;
+    const local = localApiOverride();
+    if (local) return local;
   }
   return currentTarget(rawUrl).api;
 }

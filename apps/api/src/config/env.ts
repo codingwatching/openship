@@ -43,6 +43,21 @@ const envSchema = z.object({
    */
   PORT: z.coerce.number().int().positive().catch(runtimeTarget.ports.api),
 
+  /**
+   * Extra origins to trust for CORS / origin-guard / auth, comma-separated.
+   * The desktop app runs the dashboard on a DYNAMIC free port, so its origin
+   * isn't in the static runtime-target table — Electron passes it here at
+   * spawn (e.g. "http://localhost:51234,http://127.0.0.1:51234").
+   */
+  OPENSHIP_EXTRA_TRUSTED_ORIGINS: z.string().optional(),
+
+  /**
+   * Dashboard origin for auth redirects (desktop-login/claim, cloud-callback).
+   * The desktop dashboard runs on a DYNAMIC port Electron injects here; unset
+   * elsewhere → falls back to the static runtime-target dashboard URL.
+   */
+  OPENSHIP_LOCAL_DASHBOARD_URL: z.string().optional(),
+
   /* ---------- Mode ---------- */
   CLOUD_MODE: envBool("false"),
   /**
@@ -436,15 +451,29 @@ if (!env.CLOUD_MODE) {
  * hardcoded clean origins from `@repo/core` (no trailing slashes,
  * always http(s)) so we just dedupe them — no normalization needed.
  */
+const extraTrustedOrigins = (env.OPENSHIP_EXTRA_TRUSTED_ORIGINS ?? "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 export const trustedOrigins = [
   ...new Set([
     runtimeTarget.dashboard,
     runtimeTarget.api,
+    ...extraTrustedOrigins,
     ...(env.NODE_ENV === "production"
       ? []
       : [LOCAL_WEB_URL, ...dashboardRuntimeOrigins]),
   ]),
 ];
+
+/**
+ * Dashboard origin for auth redirects (desktop-login/claim, cloud-callback).
+ * Desktop injects the dynamic dashboard port via OPENSHIP_LOCAL_DASHBOARD_URL;
+ * otherwise the static runtime-target dashboard URL.
+ */
+export const localDashboardUrl =
+  env.OPENSHIP_LOCAL_DASHBOARD_URL?.trim() || runtimeTarget.dashboard;
 
 /** Internal loopback URL for the API (used by nginx webhook proxy, etc.) */
 export const internalApiUrl = `http://127.0.0.1:${env.PORT}`;

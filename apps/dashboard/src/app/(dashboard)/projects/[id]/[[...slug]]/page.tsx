@@ -532,11 +532,20 @@ const ProjectSettingsContent = () => {
           canForceOrphan?: boolean;
           unrecoverable?: Array<{ step: string; error?: string }>;
         };
-        // Graceful gate hit — there's active work. Show a toast that
-        // tells the user what's blocking + how to force.
+        // Graceful gate hit — there's active work (an in-flight deployment,
+        // backup, or restore). The user already confirmed by typing the project
+        // name, so escalate to a force teardown: the backend cancels the
+        // in-flight work, waits for it to quiesce, then tears down and deletes.
+        // Guard on `!force` so a forced call that somehow still reports active
+        // work can't loop.
         if (body.code === "PROJECT_HAS_ACTIVE_WORK") {
+          if (!force) {
+            showToast("Cancelling active work, then deleting…", "success", "Cleaning up");
+            void handleDeleteProject(deleteApp, wipeVolumes, true, forceOrphan);
+            return;
+          }
           showToast(
-            body.error ?? "Project has active work — cancel it or use force delete",
+            body.error ?? "Project has active work — try again in a moment",
             "error",
             "Cannot delete",
           );

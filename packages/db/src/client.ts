@@ -42,7 +42,12 @@ export function getPgPool(): Pool {
 // ─── Resolved paths ─────────────────────────────────────────────────────────
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = resolve(__dirname, "../drizzle");
+// `../drizzle` resolves into the read-only embedded FS when this module is
+// baked into a `bun build --compile` binary (the desktop app), where the .sql
+// files aren't present. OPENSHIP_MIGRATIONS_DIR points that build at the
+// migrations shipped alongside the binary as a data asset.
+const MIGRATIONS_DIR =
+  process.env.OPENSHIP_MIGRATIONS_DIR ?? resolve(__dirname, "../drizzle");
 
 // ─── Data directory ──────────────────────────────────────────────────────────
 
@@ -199,6 +204,27 @@ function clearStalePgliteLock(dataDir: string): void {
   }
 }
 
+/**
+ * When @repo/db is baked into a `bun build --compile` binary (the desktop app),
+ * pglite's own `pglite.wasm`/`pglite.data` aren't on disk beside its module — it
+ * looks for them in the read-only embedded FS (`/$bunfs/root/…`) and fails.
+ * OPENSHIP_PGLITE_ASSETS_DIR points at copies shipped alongside the binary; we
+ * hand them to PGlite directly so it never resolves its own module dir.
+ */
+async function resolvePgliteAssets() {
+  const dir = process.env.OPENSHIP_PGLITE_ASSETS_DIR;
+  if (!dir) return undefined;
+  // WebAssembly is a bun/node runtime global, but not in this package's TS lib
+  // (ES2022 + @types/node). Reach it via a typed globalThis cast so @repo/db
+  // typechecks without pulling in the DOM lib.
+  const { WebAssembly } = globalThis as unknown as {
+    WebAssembly: { compile(bytes: Uint8Array): Promise<unknown> };
+  };
+  const wasmModule = await WebAssembly.compile(readFileSync(join(dir, "pglite.wasm")));
+  const fsBundle = new Blob([readFileSync(join(dir, "pglite.data"))]);
+  return { wasmModule, fsBundle };
+}
+
 async function createPgliteClient(): Promise<Database> {
   _driver = "pglite";
 
@@ -225,7 +251,8 @@ async function createPgliteClient(): Promise<Database> {
   }
   clearStalePgliteLock(dataDir);
 
-  const client = new PGlite(dataDir);
+  const assets = await resolvePgliteAssets();
+  const client = assets ? new PGlite({ dataDir, ...assets }) : new PGlite(dataDir);
   const db = drizzle(client, { schema });
 
   // Run pending migrations

@@ -79,7 +79,17 @@ const ProjectCard: React.FC<Props> = ({ project }) => {
 
       {/* Name + domain */}
       <div className="min-w-0 flex-shrink-0 w-44 lg:w-56">
-        <p className="text-sm font-medium text-foreground truncate">{project.name}</p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-medium text-foreground truncate">{project.name}</p>
+          {project.activeVersion != null && (
+            <span
+              className="shrink-0 rounded-md bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground"
+              title={`Live version v${project.activeVersion}`}
+            >
+              v{project.activeVersion}
+            </span>
+          )}
+        </div>
         {domain && <p className="text-xs text-muted-foreground truncate mt-0.5">{domain}</p>}
       </div>
 

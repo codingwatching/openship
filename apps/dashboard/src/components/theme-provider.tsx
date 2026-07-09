@@ -13,8 +13,8 @@ interface ThemeContextValue {
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
-  theme: "system",
-  resolvedTheme: "dark",
+  theme: "light",
+  resolvedTheme: "light",
   setTheme: () => {},
   toggle: () => {},
 });
@@ -25,7 +25,7 @@ export function useTheme() {
 
 function resolveTheme(t: Theme): ResolvedTheme {
   if (t === "light" || t === "dark") return t;
-  if (typeof window === "undefined") return "dark";
+  if (typeof window === "undefined") return "light";
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
@@ -34,13 +34,14 @@ function applyTheme(resolved: ResolvedTheme) {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>("system");
-  const [resolvedTheme, setResolved] = useState<ResolvedTheme>("dark");
+  const [theme, setThemeState] = useState<Theme>("light");
+  const [resolvedTheme, setResolved] = useState<ResolvedTheme>("light");
 
-  // Initialize from localStorage
+  // Initialize from localStorage. No stored preference → light (product
+  // default is light-first, not OS-following).
   useEffect(() => {
     const stored = localStorage.getItem("theme") as Theme | null;
-    const t: Theme = stored === "light" || stored === "dark" ? stored : "system";
+    const t: Theme = stored === "light" || stored === "dark" ? stored : "light";
     const resolved = resolveTheme(t);
     setThemeState(t);
     setResolved(resolved);
@@ -84,12 +85,8 @@ export function ThemeScript() {
   const script = `
     (function(){
       var t = localStorage.getItem('theme');
-      if (t === 'light' || t === 'dark') {
-        document.documentElement.setAttribute('data-theme', t);
-      } else {
-        document.documentElement.setAttribute('data-theme',
-          window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-      }
+      // Default to light unless the user explicitly stored dark.
+      document.documentElement.setAttribute('data-theme', t === 'dark' ? 'dark' : 'light');
     })();
   `;
   return <script dangerouslySetInnerHTML={{ __html: script }} />;

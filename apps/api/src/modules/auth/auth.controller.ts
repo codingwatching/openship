@@ -27,7 +27,7 @@
 import type { Context } from "hono";
 import { setSignedCookie } from "hono/cookie";
 import { auth, COOKIE_PREFIX } from "../../lib/auth";
-import { env, runtimeTarget } from "../../config/env";
+import { env, localDashboardUrl } from "../../config/env";
 
 // ─── HTML result page ────────────────────────────────────────────────────────
 
@@ -146,7 +146,7 @@ export async function desktopLogin(c: Context) {
   const { getAuthMode } = await import("../../lib/auth-mode");
   const authMode = await getAuthMode();
   if (authMode !== "none") {
-    return c.redirect(`${runtimeTarget.dashboard}/login`);
+    return c.redirect(`${localDashboardUrl}/login`);
   }
 
   const { ensureLocalUser } = await import("../../lib/local-user");
@@ -161,7 +161,7 @@ export async function desktopLogin(c: Context) {
   });
   await setSessionCookie(c, session.token, session.expiresAt);
 
-  return c.redirect(runtimeTarget.dashboard);
+  return c.redirect(localDashboardUrl);
 }
 
 /**
@@ -212,7 +212,7 @@ export async function cloudCallback(c: Context) {
       });
       await setSessionCookie(c, session.token, session.expiresAt);
 
-      return c.redirect(runtimeTarget.dashboard);
+      return c.redirect(localDashboardUrl);
     }
 
     const validated = validateDesktopState(state);
@@ -335,5 +335,5 @@ export async function desktopClaim(c: Context) {
   }
 
   await setSessionCookie(c, result.token, result.expiresAt);
-  return c.redirect(runtimeTarget.dashboard);
+  return c.redirect(localDashboardUrl);
 }

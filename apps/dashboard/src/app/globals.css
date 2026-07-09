@@ -6,6 +6,39 @@
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /*
+ * Desktop (Electron) frameless title bar. `DesktopChrome` adds `.is-desktop`
+ * to <html> (only inside the app) and renders `.app-titlebar` — a full-width
+ * strip across the very top that IS the draggable title bar (like VS Code).
+ * All app content is pushed below it so nothing sits under the strip or the
+ * inlaid macOS traffic lights. `data-app-topinset` handles fixed top bars
+ * (e.g. the auth shell) that ignore the body padding. No effect on the web.
+ */
+.is-desktop {
+  --titlebar-h: 2rem;
+}
+/*
+ * The title bar is a fixed OVERLAY across the very top — it adds no layout
+ * gap. It sits over the naturally-empty top edge (the sidebar's margin, page
+ * top padding), so nothing important is under it, and macOS draws the traffic
+ * lights on top regardless. Interactive elements that already clear this strip
+ * stay clickable.
+ */
+.is-desktop .app-titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
+  z-index: 30;
+  -webkit-app-region: drag;
+}
+/* The auth shell's top bar is fixed at top:0, so its logo would sit under the
+ * strip — nudge just that bar's content down to clear the traffic lights. */
+.is-desktop [data-app-topinset] {
+  padding-top: var(--titlebar-h);
+}
+
+/*
  * Expose shadcn bridge vars as Tailwind utilities.
  * "inline" keeps them as runtime var() refs so light/dark switching works.
  */

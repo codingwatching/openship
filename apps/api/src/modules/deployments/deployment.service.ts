@@ -223,6 +223,43 @@ export async function rejectDeployment(
   };
 }
 
+/**
+ * Keep (confirm) a partial-failure deploy that is awaiting a decision. The
+ * succeeded services are already live in-place; "keep" just clears the pending
+ * marker so the deploy stops reading as "Action Required" and settles as a
+ * kept partial. Idempotent — re-keeping an already-resolved deploy is a no-op.
+ */
+export async function keepDeployment(
+  deploymentId: string,
+  organizationId: string,
+) {
+  const dep = await getDeployment(deploymentId, organizationId);
+
+  if (dep.status !== "partial_failure") {
+    throw new ForbiddenError("Only a deployment awaiting a decision can be kept");
+  }
+
+  const meta = (dep.meta as Record<string, unknown> | null) ?? {};
+  const existingCompose = (meta.composeDeployment as Record<string, unknown> | undefined) ?? {};
+  if (existingCompose.decision === "pending") {
+    await repos.deployment.updateStatus(deploymentId, "partial_failure", {
+      meta: { ...meta, composeDeployment: { ...existingCompose, decision: "kept" } },
+    });
+  }
+
+  // Normally onSuccess already advanced the pointer to this release; ensure it
+  // (the kept partial is the live one now).
+  const project = await repos.project.findById(dep.projectId);
+  if (project && project.activeDeploymentId !== deploymentId) {
+    await repos.project.setActiveDeployment(project.id, deploymentId);
+  }
+
+  return {
+    success: true,
+    deployment: (await repos.deployment.findById(deploymentId)) ?? dep,
+  };
+}
+
 export async function getDeploymentLogs(
   deploymentId: string,
   organizationId: string,

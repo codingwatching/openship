@@ -120,9 +120,98 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build-desktop:
+    name: Build desktop installer (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            label: macOS arm64
+            find: "-name *.dmg"
+            asset: Openship-arm64.dmg
+          - os: macos-13
+            label: macOS x64
+            find: "-name *.dmg"
+            asset: Openship-x64.dmg
+          - os: windows-latest
+            label: Windows x64
+            find: "-name *.exe"
+            asset: Openship-Setup.exe
+          - os: ubuntu-latest
+            label: Linux x64
+            find: "-name *.AppImage"
+            asset: Openship.AppImage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read bun version
+        id: bun-version
+        shell: bash
+        run: echo "version=$(cat .bun-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ steps.bun-version.outputs.version }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Restore bun cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install AppImage build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libfuse2
+
+      - name: Build installer
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+        run: bun run --cwd apps/desktop make
+
+      - name: Collect + rename installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="$(find apps/desktop/out/make -type f ${{ matrix.find }} | head -n1)"
+          if [[ -z "${FILE}" ]]; then
+            echo "No installer matched '${{ matrix.find }}' under apps/desktop/out/make"
+            find apps/desktop/out/make -type f || true
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${FILE}" "dist/${{ matrix.asset }}"
+          ( cd dist && shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256" )
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.asset }}
+          path: |
+            dist/${{ matrix.asset }}
+            dist/${{ matrix.asset }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish GitHub release
-    needs: [build-openship, build-email]
+    needs: [build-openship, build-email, build-desktop]
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -142,6 +231,13 @@ jobs:
           name: openship-email-release
           path: dist
 
+      - name: Download desktop installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: dist
+          merge-multiple: true
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -160,3 +256,19 @@ jobs:
             dist/openship-${TAG}-linux-amd64.tar.gz.sha256 \
             dist/openship-email-${TAG}-linux-amd64.tar.gz \
             dist/openship-email-${TAG}-linux-amd64.tar.gz.sha256
+
+      - name: Attach desktop installers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # Upload whichever desktop installers built (fail-fast:false means a
+          # single-OS failure shouldn't block the release).
+          for asset in Openship-arm64.dmg Openship-x64.dmg Openship-Setup.exe Openship.AppImage; do
+            if [[ -f "dist/${asset}" ]]; then
+              gh release upload "${TAG}" "dist/${asset}" "dist/${asset}.sha256" --clobber
+            else
+              echo "::warning::desktop installer missing: ${asset}"
+            fi
+          done

@@ -174,6 +174,26 @@ export const Deployments = () => {
 
   return (
     <div className="space-y-6">
+      {/* Action-required nudge — the live release is a partial-failure deploy
+          still awaiting a keep/reject decision. Links to the build screen where
+          the decision (Keep / Retry / Reject) lives, so it stays reachable after
+          navigating away. */}
+      {projectData.awaitingDecision && projectData.activeDeploymentId && (
+        <WarningCallout
+          title="Action required — some services failed"
+          description="This project's latest release deployed with failed services and is waiting for you to keep or reject it."
+          actions={
+            <button
+              type="button"
+              onClick={() => router.push(`/build/${projectData.activeDeploymentId}`)}
+              className="rounded-lg bg-amber-600 px-3 py-1.5 text-[12px] font-medium text-white transition-colors hover:bg-amber-700"
+            >
+              Review deployment
+            </button>
+          }
+        />
+      )}
+
       {/* "Project outdated" nudge — only when the deployed commit is behind the
           branch HEAD. Redeploy uses the same direct path as the button below. */}
       {commitStatus?.behind && (

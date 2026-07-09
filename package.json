@@ -13,6 +13,11 @@
   ],
   "scripts": {
     "build": "turbo run build",
+    "build:desktop": "bun run --cwd apps/desktop make",
+    "build:cli": "bun run --cwd apps/cli build",
+    "build:server": "bun run --cwd apps/api build-release",
+    "build:email": "bun run --cwd apps/email build",
+    "start:desktop": "node apps/desktop/build/run.mjs",
     "dev": "turbo run dev --concurrency=20",
     "dev:api": "turbo run dev --filter=@repo/api...",
     "dev:local": "turbo run dev --filter=@repo/api --filter=@repo/dashboard --concurrency=10",

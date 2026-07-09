@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
  */
 export default function DocsRootLayout({ children }: { children: ReactNode }) {
   return (
-    <RootProvider>
+    <RootProvider theme={{ defaultTheme: "light", enableSystem: false }}>
       <DocsLayout
         tree={docsSource.pageTree}
         nav={{

@@ -158,6 +158,15 @@ export async function reconcileDeployment(deploymentId: string): Promise<Reconci
     return "finalized";
   }
 
+  if (verdict === "partial_failure") {
+    // Hold for an explicit keep/reject decision — same as the normal compose
+    // finalize path — so a connection-loss deploy that reconciles to a partial
+    // failure can't silently read as a clean "Deployed".
+    const existingCompose =
+      (nextMeta.composeDeployment as Record<string, unknown> | undefined) ?? {};
+    nextMeta.composeDeployment = { ...existingCompose, decision: "pending" };
+  }
+
   await repos.deployment.updateStatus(dep.id, verdict, { errorMessage: null, meta: nextMeta });
 
   const project = await repos.project.findById(dep.projectId);

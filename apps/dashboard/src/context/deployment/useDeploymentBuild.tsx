@@ -48,12 +48,15 @@ function mapServiceStatusesFromBuildStatus(data: any): ServiceDeployStatus[] {
   return (data.services as any[]).map((svc: any) => {
     const sd = (data.serviceStatuses as any[]).find((s: any) => s.serviceId === svc.serviceId);
     const rawStatus = sd?.status ?? "pending";
+    // Persisted rows use the canonical vocab (success/failure/missing/
+    // indeterminate/skipped); live SSE rows use running/failed/deploying/
+    // building. Collapse both into the UI's live status set.
     const status: ServiceDeployStatus["status"] =
-      rawStatus === "running"
+      rawStatus === "running" || rawStatus === "success"
         ? "running"
-        : rawStatus === "failed"
+        : rawStatus === "failed" || rawStatus === "failure" || rawStatus === "missing"
           ? "failed"
-          : rawStatus === "deploying" || rawStatus === "building"
+          : rawStatus === "deploying" || rawStatus === "building" || rawStatus === "indeterminate"
             ? "deploying"
             : "pending";
     return {
@@ -263,6 +266,10 @@ export function useDeploymentBuild(
         isDeploying: false,
         failureMessage: "",
         warningMessage,
+        // A warning on success means a partial failure (some services failed):
+        // hold it for an explicit keep/reject decision. The server flag takes
+        // over on refresh (loadBuildSession) — false once the user keeps it.
+        decisionPending: data?.decisionPending ?? !!warningMessage,
         screenshots: data?.screenshots || prev.screenshots,
         projectId: data?.project_id || prev.projectId,
         phaseDurations: nextDurations,
@@ -500,6 +507,7 @@ export function useDeploymentBuild(
         deploymentCanceled: false,
         failureMessage: "",
         warningMessage: "",
+        decisionPending: false,
         errorCode: "",
         errorDetails: null,
         pendingPrompt: null,
@@ -867,6 +875,7 @@ export function useDeploymentBuild(
             ? {
                 failureMessage: data.failureMessage || prev.failureMessage,
                 warningMessage: data.warningMessage || prev.warningMessage,
+                decisionPending: !!data.decisionPending,
                 errorCode: data.errorCode || prev.errorCode,
               }
             : {}),
@@ -1020,6 +1029,7 @@ export function useDeploymentBuild(
           screenshots: !isActive ? (data.screenshots || []) : [],
           failureMessage: !isActive ? (data.failureMessage || "") : "",
           warningMessage: !isActive ? (data.warningMessage || "") : "",
+          decisionPending: !isActive ? !!data.decisionPending : false,
           errorCode: !isActive ? (data.errorCode || "") : "",
           errorDetails: null,
           buildLogs,
@@ -1158,6 +1168,7 @@ export function useDeploymentBuild(
           deploymentCanceled: false,
           failureMessage: "",
           warningMessage: "",
+          decisionPending: false,
           errorCode: "",
           errorDetails: null,
           pendingPrompt: null,

@@ -1,8 +1,22 @@
 /**
  * Shared utility functions.
+ *
+ * MUST stay isomorphic — this module is in @repo/core's barrel, which client
+ * components import, so it can't reference `node:*`. IDs use the Web Crypto
+ * API (`crypto.getRandomValues`, global in Node 20+, bun, browsers, and edge)
+ * rather than `node:crypto`, so bundling it into the browser doesn't break.
  */
 
-import { randomBytes } from "node:crypto";
+/** URL-safe base64 of raw bytes, no `node:crypto`/Buffer dependency. */
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  const b64 =
+    typeof btoa === "function"
+      ? btoa(binary)
+      : Buffer.from(binary, "binary").toString("base64");
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
 
 /** Generate a URL-safe slug from a string */
 export function slugify(text: string): string {
@@ -16,7 +30,9 @@ export function slugify(text: string): string {
 
 /** Generate a prefixed unique ID (e.g. "proj_abc123...") */
 export function generateId(prefix?: string): string {
-  const id = randomBytes(12).toString("base64url");
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  const id = bytesToBase64Url(bytes);
   return prefix ? `${prefix}_${id}` : id;
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { LOCAL_API_URL, LOCAL_DASHBOARD_URL } from "@repo/core";
+import { getApiOrigin } from "@/lib/api/urls";
 import { validateSshPayload } from "@repo/onboarding";
 import type { SshPayload } from "@repo/onboarding";
 import type { StepProps } from "./step-props";
@@ -70,8 +70,8 @@ export function SshStep({ state, onUpdate, onNext, onBack }: StepProps) {
 
     onUpdate({
       ssh: payload,
-      apiUrl: LOCAL_API_URL,
-      dashboardUrl: LOCAL_DASHBOARD_URL,
+      apiUrl: getApiOrigin(),
+      dashboardUrl: window.location.origin,
     });
     setError(null);
     onNext();

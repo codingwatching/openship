@@ -36,20 +36,35 @@ import { fileURLToPath } from "node:url";
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const ROOT_PKG = join(ROOT, "package.json");
 const API_PKG = join(ROOT, "apps/api/package.json");
+// Every package.json whose version should track the release. API is the
+// operative source the next version is computed from; the rest are synced to
+// match so the desktop app (forge reads apps/desktop/package.json), web, and
+// email all report the same version as the tag.
+const SYNCED_PKGS = [
+  ROOT_PKG,
+  API_PKG,
+  join(ROOT, "apps/desktop/package.json"),
+  join(ROOT, "apps/web/package.json"),
+  join(ROOT, "apps/email/package.json"),
+];
 
 /* ─── CLI parsing ──────────────────────────────────────────────────── */
 
 const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const forceBranch = args.includes("--force-branch");
+if (args.includes("--help") || args.includes("-h")) usageAndExit();
 const cmd = args.find((a) => !a.startsWith("--"));
-if (!cmd) usageAndExit();
 
-type BumpKind = "patch" | "minor" | "major" | "rc" | "literal";
+type BumpKind = "patch" | "minor" | "major" | "rc" | "current" | "literal";
+// No arg (or "current") → release the version already in package.json as-is,
+// no bump. Otherwise bump / set the version.
 const bump: { kind: BumpKind; literal?: string } =
-  cmd === "patch" || cmd === "minor" || cmd === "major" || cmd === "rc"
-    ? { kind: cmd }
-    : { kind: "literal", literal: cmd };
+  !cmd || cmd === "current"
+    ? { kind: "current" }
+    : cmd === "patch" || cmd === "minor" || cmd === "major" || cmd === "rc"
+      ? { kind: cmd }
+      : { kind: "literal", literal: cmd };
 
 if (bump.kind === "literal" && !/^\d+\.\d+\.\d+(-[a-z0-9]+(\.\d+)?)?$/i.test(bump.literal!)) {
   console.error(`Refusing literal version "${bump.literal}" — not a semver string.`);
@@ -83,52 +98,74 @@ log(`Prerelease:                 ${tag.includes("-") ? "yes" : "no"}`);
 log(``);
 
 if (dryRun) {
-  log(`[dry-run] would update:`);
-  log(`  - ${API_PKG}`);
-  log(`  - ${ROOT_PKG}`);
-  log(`[dry-run] would commit + push to main, then tag + push ${tag}`);
+  if (bump.kind === "current") {
+    log(`[dry-run] would tag the current version (no bump) and push ${tag}`);
+  } else {
+    log(`[dry-run] would update:`);
+    for (const p of SYNCED_PKGS) log(`  - ${p}`);
+    log(`[dry-run] would commit + push, then tag + push ${tag}`);
+  }
   log(`[dry-run] no files written, no git ops executed.`);
   process.exit(0);
 }
 
+if (tagExists(tag)) {
+  console.error(
+    `Refusing: tag ${tag} already exists. ` +
+      (bump.kind === "current"
+        ? `Bump the version (patch/minor/major) instead of re-releasing ${tag}.`
+        : `Pick a different version.`),
+  );
+  process.exit(1);
+}
+
 /* ─── Apply ─────────────────────────────────────────────────────────── */
 
-writeVersion(API_PKG, next);
-writeVersion(ROOT_PKG, next);
-log(`✓ updated package.json files`);
+if (bump.kind === "current") {
+  // No version change — release exactly what's committed.
+  git("push", "origin", currentBranch());
+  log(`✓ pushed ${currentBranch()} (releasing current version, no bump)`);
+} else {
+  for (const p of SYNCED_PKGS) writeVersion(p, next);
+  log(`✓ updated ${SYNCED_PKGS.length} package.json files`);
 
-git("add", API_PKG, ROOT_PKG);
-git("commit", "-m", `Bump to ${tag}`);
-log(`✓ committed`);
+  git("add", ...SYNCED_PKGS);
+  git("commit", "-m", `Bump to ${tag}`);
+  log(`✓ committed`);
 
-git("push", "origin", currentBranch());
-log(`✓ pushed bump commit`);
+  git("push", "origin", currentBranch());
+  log(`✓ pushed bump commit`);
+}
 
 git("tag", tag);
 git("push", "origin", tag);
-log(`✓ pushed tag ${tag}`);
+log(`✓ pushed tag ${tag} — CI is building installers for macOS, Windows & Linux`);
 
 /* ─── Final report ─────────────────────────────────────────────────── */
 
 const remoteUrl = git("remote", "get-url", "origin", { capture: true }).trim();
 const ghMatch = remoteUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+const actionsUrl = ghMatch ? `https://github.com/${ghMatch[1]}/${ghMatch[2]}/actions` : "";
 if (ghMatch) {
   const [, owner, repo] = ghMatch;
   log(``);
-  log(`Release pipeline triggered. Watch at:`);
-  log(`  https://github.com/${owner}/${repo}/actions`);
-  log(``);
-  log(`Once it finishes, the release will appear at:`);
+  log(`Release will appear at:`);
   log(`  https://github.com/${owner}/${repo}/releases/tag/${tag}`);
+  log(``);
 }
+
+// Stream the live build status right here in the terminal.
+watchCi(tag, actionsUrl);
 
 /* ─── Helpers ──────────────────────────────────────────────────────── */
 
 function usageAndExit(): never {
   console.error(
     [
-      "Usage: bun scripts/release.ts <patch|minor|major|rc|x.y.z[-rc.N]> [--dry-run] [--force-branch]",
+      "Usage: bun scripts/release.ts [current|patch|minor|major|rc|x.y.z[-rc.N]] [--dry-run] [--force-branch]",
       "",
+      "  (no arg)       release the current version as-is (no bump)",
+      "  current        same as no arg",
       "  patch          0.1.0      → 0.1.1",
       "  minor          0.1.0      → 0.2.0",
       "  major          0.1.0      → 1.0.0",
@@ -139,9 +176,73 @@ function usageAndExit(): never {
       "",
       "  --dry-run      print the plan, don't touch anything",
       "  --force-branch run from a non-main branch (default refuses)",
+      "",
+      "In every case CI builds installers for macOS (arm64 + x64), Windows,",
+      "and Linux and publishes them to the GitHub release. Live build status",
+      "streams here after the tag is pushed (needs the `gh` CLI, logged in).",
     ].join("\n"),
   );
   process.exit(1);
+}
+
+/** True if the tag already exists locally or on origin. */
+function tagExists(t: string): boolean {
+  const local = git("tag", "--list", t, { capture: true }).trim();
+  if (local) return true;
+  const remote = git("ls-remote", "--tags", "origin", t, { capture: true }).trim();
+  return remote.length > 0;
+}
+
+/**
+ * Stream the live status of the release workflow run into this terminal.
+ * Uses the `gh` CLI (`gh run watch`), which shows each job spinning →
+ * pass/fail and exits when the run finishes. Degrades gracefully (prints the
+ * Actions URL) if `gh` is missing, not authed, or the run isn't found yet.
+ */
+function watchCi(t: string, fallbackUrl: string): void {
+  const have = spawnSync("gh", ["--version"], { encoding: "utf8" });
+  if (have.status !== 0) {
+    if (fallbackUrl) log(`Watch the build:  ${fallbackUrl}`);
+    return;
+  }
+
+  log(`Waiting for the release run to register on GitHub…`);
+  let runId = "";
+  for (let i = 0; i < 15 && !runId; i++) {
+    Bun.sleepSync(4000);
+    const out = spawnSync(
+      "gh",
+      ["run", "list", "--workflow", "release.yml", "--limit", "15", "--json", "databaseId,headBranch,event,createdAt"],
+      { cwd: ROOT, encoding: "utf8" },
+    );
+    if (out.status !== 0) continue;
+    try {
+      const runs = JSON.parse(out.stdout ?? "[]") as Array<{
+        databaseId: number;
+        headBranch: string;
+        event: string;
+      }>;
+      // Tag-triggered runs show headBranch === the tag name.
+      const match = runs.find((r) => r.headBranch === t || r.headBranch === `refs/tags/${t}`);
+      if (match) runId = String(match.databaseId);
+    } catch {
+      // keep polling
+    }
+  }
+
+  if (!runId) {
+    log(`Couldn't locate the run automatically.`);
+    if (fallbackUrl) log(`Watch the build:  ${fallbackUrl}`);
+    return;
+  }
+
+  log(``);
+  log(`▼ live build status (Ctrl-C to stop watching — the build keeps running):`);
+  log(``);
+  // Streams job-by-job status and exits when the run completes.
+  spawnSync("gh", ["run", "watch", runId, "--interval", "6"], { cwd: ROOT, stdio: "inherit" });
+  log(``);
+  spawnSync("gh", ["run", "view", runId], { cwd: ROOT, stdio: "inherit" });
 }
 
 function preflight(): void {
@@ -190,18 +291,18 @@ function readVersion(pkgPath: string): string {
 
 function writeVersion(pkgPath: string, next: string): void {
   const raw = readFileSync(pkgPath, "utf8");
-  // Preserve formatting + trailing newline. Surgical replacement of the
-  // version field rather than full re-serialization avoids reformatting
-  // the whole file (which would create noisy diffs).
-  const replaced = raw.replace(
-    /("version"\s*:\s*")[^"]+(")/,
-    (_, a, b) => `${a}${next}${b}`,
-  );
-  if (replaced === raw) {
+  const re = /("version"\s*:\s*")[^"]+(")/;
+  // Error only if the field is genuinely absent — NOT when it's already at the
+  // target value (a no-op, common when syncing a drifted package.json).
+  if (!re.test(raw)) {
     console.error(`Refusing: could not locate version field in ${pkgPath}.`);
     process.exit(1);
   }
-  writeFileSync(pkgPath, replaced);
+  // Preserve formatting + trailing newline. Surgical replacement of the
+  // version field rather than full re-serialization avoids reformatting
+  // the whole file (which would create noisy diffs).
+  const replaced = raw.replace(re, (_, a, b) => `${a}${next}${b}`);
+  if (replaced !== raw) writeFileSync(pkgPath, replaced);
 }
 
 interface SemverParts {
@@ -232,6 +333,7 @@ function formatSemver(p: SemverParts): string {
 }
 
 function computeNext(current: string, bump: { kind: BumpKind; literal?: string }): string {
+  if (bump.kind === "current") return current;
   if (bump.kind === "literal") return bump.literal!;
   const parsed = parseSemver(current);
   switch (bump.kind) {

@@ -16,7 +16,6 @@ import type { DeploymentStatus, ServiceDeployStatus } from "@/context/deployment
 import { encodeRepoSlug, encodeLocalSlug } from "@/utils/repoSlug";
 import type { BuildLog } from "@/utils/deploymentPhaseDetector";
 
-const warningDismissedKey = (deploymentId: string) => `compose-warning-dismissed:${deploymentId}`;
 const ANSI_ESCAPE_PATTERN = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 
 // The shared clone/context-prep stream (one clone for the whole deployment, not
@@ -38,8 +37,11 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
   const { resolvedTheme } = useTheme();
   const router = useRouter();
   const promptModalRef = React.useRef<string | null>(null);
-  const warningModalRef = React.useRef<string | null>(null);
-  const handledWarningDeploymentRef = React.useRef<string | null>(null);
+  // Tracks which deployment's decision dialog we've already auto-opened, so it
+  // pops once (not on every re-render) while staying re-openable via the banner.
+  const autoOpenedDecisionRef = React.useRef<string | null>(null);
+  const [decisionModalOpen, setDecisionModalOpen] = useState(false);
+  const [decisionResolved, setDecisionResolved] = useState(false);
   const [activeLogTab, setActiveLogTab] = useState("");
   // Once the user picks a tab, stop auto-following the active phase.
   const [userPinnedTab, setUserPinnedTab] = useState(false);
@@ -49,6 +51,10 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
   };
 
   const hasWarning = deploymentStatus === "ready" && !!state.warningMessage;
+  // A partial-failure deploy held for an explicit keep/reject decision. Driven
+  // by the server-backed `decisionPending` flag (survives refresh), suppressed
+  // locally once the user acts this session.
+  const showDecision = state.decisionPending && !decisionResolved;
   const isFinished =
     deploymentStatus === "ready" ||
     deploymentStatus === "failed" ||
@@ -158,108 +164,57 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
     });
   }, [state.pendingPrompt, showModal, hideModal, respondToPrompt]);
 
+  const handleKeepDeployment = React.useCallback(async () => {
+    if (state.deploymentId) {
+      try {
+        await deployApi.keep(state.deploymentId);
+      } catch {
+        // Best-effort: dismiss locally even if the confirm call fails — the
+        // banner reappears from the server flag on refresh if it didn't persist.
+      }
+    }
+    setDecisionResolved(true);
+    setDecisionModalOpen(false);
+    showToast("Deployment kept", "success", "Kept");
+  }, [state.deploymentId, showToast]);
+
+  const handleRejectDeployment = React.useCallback(async () => {
+    if (!state.deploymentId) return;
+    await deployApi.reject(state.deploymentId);
+    setDecisionResolved(true);
+    setDecisionModalOpen(false);
+    showToast("Partial deployment rejected", "success", "Deployment Reverted");
+    if (state.projectId) router.push(`/projects/${state.projectId}`);
+  }, [state.deploymentId, state.projectId, router, showToast]);
+
+  const handleRetryFailed = React.useCallback(async () => {
+    // Rebuild ONLY the failed services — the successful ones carry forward on
+    // their existing containers (compose carry-forward).
+    const failedIds = state.serviceStatuses
+      .filter((s) => s.status === "failed" && s.serviceId)
+      .map((s) => s.serviceId);
+    if (failedIds.length === 0 || !state.projectId) {
+      setDecisionResolved(true);
+      setDecisionModalOpen(false);
+      return;
+    }
+    const res = await deployApi.trigger({ projectId: state.projectId, serviceIds: failedIds });
+    setDecisionResolved(true);
+    setDecisionModalOpen(false);
+    const newId = res?.data?.deployment?.id;
+    router.push(newId ? `/build/${newId}` : `/projects/${state.projectId}`);
+  }, [state.serviceStatuses, state.projectId, router]);
+
+  // Auto-open the decision dialog once per deployment when a partial failure is
+  // awaiting a decision. Closing it leaves the persistent banner in place, so the
+  // decision stays re-openable — and reappears after a refresh via the server
+  // `decisionPending` flag — until the user keeps or rejects it.
   useEffect(() => {
-    if (
-      deploymentStatus !== "ready" ||
-      !state.warningMessage ||
-      failed === 0 ||
-      !state.deploymentId
-    ) {
-      warningModalRef.current = null;
-      handledWarningDeploymentRef.current = null;
-      return;
-    }
-
-    const warningKey = warningDismissedKey(state.deploymentId);
-
-    if (typeof window !== "undefined" && window.sessionStorage.getItem(warningKey) === "1") {
-      handledWarningDeploymentRef.current = state.deploymentId;
-      return;
-    }
-
-    if (handledWarningDeploymentRef.current === state.deploymentId) return;
-    if (warningModalRef.current) return;
-
-    let modalId = "";
-    modalId = showModal({
-      customContent: (
-        <PartialSuccessModalContent
-          failed={failed}
-          total={total}
-          warningMessage={state.warningMessage}
-          onKeep={() => {
-            handledWarningDeploymentRef.current = state.deploymentId;
-            if (typeof window !== "undefined") {
-              window.sessionStorage.setItem(warningKey, "1");
-            }
-            hideModal(modalId);
-          }}
-          onRetry={async () => {
-            // Rebuild ONLY the failed services — the successful ones carry
-            // forward on their existing containers (compose carry-forward).
-            // Same converged path as smart-route, just an explicit id list.
-            const failedIds = state.serviceStatuses
-              .filter((s) => s.status === "failed" && s.serviceId)
-              .map((s) => s.serviceId);
-            if (failedIds.length === 0 || !state.projectId) {
-              hideModal(modalId);
-              return;
-            }
-            handledWarningDeploymentRef.current = state.deploymentId;
-            if (typeof window !== "undefined") {
-              window.sessionStorage.setItem(warningKey, "1");
-            }
-            const res = await deployApi.trigger({
-              projectId: state.projectId,
-              serviceIds: failedIds,
-            });
-            hideModal(modalId);
-            const newId = res?.data?.deployment?.id;
-            router.push(newId ? `/build/${newId}` : `/projects/${state.projectId}`);
-          }}
-          onReject={async () => {
-            handledWarningDeploymentRef.current = state.deploymentId;
-            if (typeof window !== "undefined") {
-              window.sessionStorage.setItem(warningKey, "1");
-            }
-
-            await deployApi.reject(state.deploymentId!);
-            hideModal(modalId);
-            showToast("Partial deployment rejected", "success", "Deployment Reverted");
-
-            if (state.projectId) {
-              router.push(`/projects/${state.projectId}`);
-            }
-          }}
-        />
-      ),
-      width: "640px",
-      maxWidth: "92vw",
-      showCloseButton: true,
-      onClose: () => {
-        if (warningModalRef.current === modalId) {
-          warningModalRef.current = null;
-        }
-        handledWarningDeploymentRef.current = state.deploymentId;
-        if (typeof window !== "undefined") {
-          window.sessionStorage.setItem(warningKey, "1");
-        }
-      },
-    });
-
-    warningModalRef.current = modalId;
-  }, [
-    deploymentStatus,
-    failed,
-    hideModal,
-    router,
-    showModal,
-    showToast,
-    state.deploymentId,
-    state.projectId,
-    state.warningMessage,
-    total,
-  ]);
+    if (!showDecision || !state.deploymentId) return;
+    if (autoOpenedDecisionRef.current === state.deploymentId) return;
+    autoOpenedDecisionRef.current = state.deploymentId;
+    setDecisionModalOpen(true);
+  }, [showDecision, state.deploymentId]);
 
   const handleViewDashboard = () => {
     if (state.projectId) router.push(`/projects/${state.projectId}`);
@@ -285,11 +240,13 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
       ? "Deployment Cancelled"
       : deploymentStatus === "failed"
         ? "Deployment Failed"
-        : hasWarning
-          ? "Deployed With Warnings"
-          : deploymentStatus === "ready"
-            ? "Deployment Successful"
-            : "Deploying Services…";
+        : showDecision
+          ? "Action Required"
+          : hasWarning
+            ? "Deployed With Warnings"
+            : deploymentStatus === "ready"
+              ? "Deployment Successful"
+              : "Deploying Services…";
 
   return (
     <div className="min-h-screen bg-background max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8">
@@ -334,8 +291,30 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Main column */}
         <div className="lg:col-span-2 space-y-6">
-          {/* Warning banner */}
-          {hasWarning && (
+          {/* Decision banner — persists while a partial deploy awaits keep/reject
+              (survives refresh via the server flag). Re-opens the dialog. */}
+          {showDecision ? (
+            <div className="rounded-2xl border border-amber-500/40 bg-amber-500/10 px-5 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-amber-700 dark:text-amber-300">
+                    Action required — some services failed
+                  </p>
+                  <p className="mt-1 text-sm text-amber-700/80 dark:text-amber-300/80">
+                    {state.warningMessage ||
+                      "This deployment finished with failed services. Keep it and fix them later, or reject it to restore the previous version."}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDecisionModalOpen(true)}
+                  className="shrink-0 rounded-lg bg-amber-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-amber-700"
+                >
+                  Review
+                </button>
+              </div>
+            </div>
+          ) : hasWarning ? (
             <div className="rounded-2xl border border-amber-500/30 bg-amber-500/8 px-5 py-4">
               <p className="text-sm font-medium text-amber-700 dark:text-amber-300">
                 Some services need attention
@@ -344,7 +323,7 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
                 {state.warningMessage}
               </p>
             </div>
-          )}
+          ) : null}
 
           <ComposeServiceLogsPanel
             logs={state.buildLogs}
@@ -420,6 +399,27 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
           </div>
         </div>
       </div>
+
+      {showDecision && decisionModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setDecisionModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-[640px] overflow-hidden rounded-2xl border border-border/50 bg-card shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <PartialSuccessModalContent
+              failed={failed}
+              total={total}
+              warningMessage={state.warningMessage}
+              onKeep={handleKeepDeployment}
+              onRetry={handleRetryFailed}
+              onReject={handleRejectDeployment}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

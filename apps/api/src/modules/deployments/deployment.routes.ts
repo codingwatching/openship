@@ -48,6 +48,7 @@ r.post("/:id/redeploy", { tag: "deployment:write" }, cloudDeploymentProxy, ctrl.
 r.post("/:id/rollback", { tag: "deployment:write" }, cloudDeploymentProxy, ctrl.rollback);
 r.post("/:id/pin", { tag: "deployment:write" }, cloudDeploymentProxy, ctrl.pin);
 r.post("/:id/reject", { tag: "deployment:write" }, cloudDeploymentProxy, ctrl.reject);
+r.post("/:id/keep", { tag: "deployment:write" }, cloudDeploymentProxy, ctrl.keep);
 r.post("/:id/cancel", { tag: "deployment:write" }, cloudDeploymentProxy, ctrl.cancel);
 r.delete("/:id", { tag: "deployment:admin" }, cloudDeploymentProxy, ctrl.remove);
 r.post("/:id/restart", { tag: "deployment:write" }, cloudDeploymentProxy, ctrl.restart);

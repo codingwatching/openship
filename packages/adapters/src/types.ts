@@ -28,10 +28,12 @@ export const DEFAULT_RESOURCE_CONFIG: ResourceConfig = {
   diskMb: 4096,
 };
 
-/** Single source of truth - build resources */
+/** Single source of truth - build resources. Sized for memory-hungry
+ *  production builds (Next.js / webpack routinely need several GB); 4 cores +
+ *  8GB is the resource-schema ceiling (project.schema.ts UpdateResourcesBody). */
 export const DEFAULT_BUILD_RESOURCE_CONFIG: ResourceConfig = {
-  cpuCores: 2,
-  memoryMb: 4096,
+  cpuCores: 4,
+  memoryMb: 8192,
   diskMb: 10240,
 };
 

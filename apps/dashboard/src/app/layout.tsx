@@ -7,6 +7,7 @@ import { I18nProvider } from "@/components/i18n-provider";
 import { AuthProvider } from "@/context/AuthContext";
 import { NetworkErrorHandler } from "@/components/network-error-handler";
 import { ModalProvider } from "@/context/ModalContext";
+import { DesktopChrome } from "@/components/desktop-chrome";
 
 /**
  * Render every route on-demand, never at build time. The dashboard resolves its
@@ -40,10 +41,22 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  // Desktop runs the API on a dynamic free port. Mirror the server-side
+  // OPENSHIP_LOCAL_API_URL into the browser so the client bundle's API base
+  // (a module-load constant that can't read a runtime env) targets it. Read
+  // per-request thanks to `force-dynamic` above.
+  const localApiOrigin = process.env.OPENSHIP_LOCAL_API_URL;
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
         <ThemeScript />
+        {localApiOrigin ? (
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `window.__OPENSHIP_API_ORIGIN__=${JSON.stringify(localApiOrigin)}`,
+            }}
+          />
+        ) : null}
       </head>
       <body>
         <ThemeProvider>
@@ -52,6 +65,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <ToastProvider>
                 <ContextToastProvider>
                   <ModalProvider>
+                    <DesktopChrome />
                     <NetworkErrorHandler />
                     {children}
                   </ModalProvider>

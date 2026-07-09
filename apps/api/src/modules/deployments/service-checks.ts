@@ -199,14 +199,23 @@ export async function emitInitialServiceChecks(
  *   - all `failure`                         → `failed`
  *
  * `skipped` rows are not counted as failures — they're intentional.
+ *
+ * Tolerant of both the canonical (`success`/`failure`) and the live-runtime
+ * (`running`/`failed`) vocabularies: the compose deploy path historically
+ * wrote live-vocab rows, so counting only the canonical strings silently
+ * rolled every partial failure up to `ready`. Reconcile (reconcile.service.ts)
+ * already matches both — mirror that here.
  */
+const SUCCESS_STATUSES = new Set(["success", "running", "ready"]);
+const FAILURE_STATUSES = new Set(["failure", "failed", "cancelled"]);
+
 export function rollupDeploymentStatus(
   perService: Array<{ status: string }>,
 ): "ready" | "partial_failure" | "failed" {
   const real = perService.filter((s) => s.status !== "skipped");
   if (real.length === 0) return "ready";
-  const successes = real.filter((s) => s.status === "success").length;
-  const failures = real.filter((s) => s.status === "failure" || s.status === "cancelled").length;
+  const successes = real.filter((s) => SUCCESS_STATUSES.has(s.status)).length;
+  const failures = real.filter((s) => FAILURE_STATUSES.has(s.status)).length;
   if (failures === 0) return "ready";
   if (successes === 0) return "failed";
   return "partial_failure";

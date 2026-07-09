@@ -97,6 +97,32 @@ contextBridge.exposeInMainWorld("desktop", {
   /** Reset config and return to onboarding */
   reset: () => ipcRenderer.invoke("app:reset"),
 
+  /** In-app updater (drives the update window). */
+  updates: {
+    /** Begin download + install of the pending update. */
+    start: () => ipcRenderer.invoke("update:start"),
+    /** Dismiss / close the update window ("Later"). */
+    dismiss: () => ipcRenderer.invoke("update:dismiss"),
+    /** Subscribe to download progress (0..1). Returns an unsubscribe fn. */
+    onProgress: (cb: (fraction: number) => void) => {
+      const h = (_e: unknown, f: number) => cb(f);
+      ipcRenderer.on("update:progress", h);
+      return () => ipcRenderer.removeListener("update:progress", h);
+    },
+    /** Fired once the download finishes and install begins. */
+    onDone: (cb: () => void) => {
+      const h = () => cb();
+      ipcRenderer.on("update:done", h);
+      return () => ipcRenderer.removeListener("update:done", h);
+    },
+    /** Fired if the update fails; receives an error message. */
+    onError: (cb: (message: string) => void) => {
+      const h = (_e: unknown, msg: string) => cb(msg);
+      ipcRenderer.on("update:error", h);
+      return () => ipcRenderer.removeListener("update:error", h);
+    },
+  },
+
   /** Shared onboarding utilities from @repo/onboarding */
   utils: {
     isPrivateIp: onboardingUtils.isPrivateIp ?? (() => false),

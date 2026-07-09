@@ -173,7 +173,20 @@ export interface DeploymentConfigSnapshot {
     failedServices: number;
     failedServiceNames: string[];
     warningMessage?: string;
+    /**
+     * User decision for a partial-failure deploy that is held for review.
+     * `"pending"` = awaiting keep/reject (drives the "Action Required" UX);
+     * `"kept"` = the operator confirmed it. Absent for non-partial deploys.
+     */
+    decision?: "pending" | "kept";
   };
+  /**
+   * A non-fatal post-deploy warning to surface on an otherwise-successful
+   * deploy — e.g. a self-hosted + free-.opsh.io deploy whose cloud edge route
+   * didn't sync (app is live locally but the free URL won't resolve yet).
+   * Persisted so it survives a page refresh, not just the live SSE event.
+   */
+  deployWarning?: string;
   previousActiveDeploymentId?: string;
   /**
    * Smart per-service target list. When set, only these service ids
