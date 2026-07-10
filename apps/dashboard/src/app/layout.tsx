@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider, ThemeScript } from "@/components/theme-provider";
 import { ToastProvider } from "@/components/toast";
-import { ToastProvider as ContextToastProvider } from "@/context/ToastContext";
 import { I18nProvider } from "@/components/i18n-provider";
 import { AuthProvider } from "@/context/AuthContext";
 import { NetworkErrorHandler } from "@/components/network-error-handler";
@@ -63,13 +62,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <AuthProvider>
             <I18nProvider>
               <ToastProvider>
-                <ContextToastProvider>
-                  <ModalProvider>
-                    <DesktopChrome />
-                    <NetworkErrorHandler />
-                    {children}
-                  </ModalProvider>
-                </ContextToastProvider>
+                <ModalProvider>
+                  <DesktopChrome />
+                  <NetworkErrorHandler />
+                  {children}
+                </ModalProvider>
               </ToastProvider>
             </I18nProvider>
           </AuthProvider>

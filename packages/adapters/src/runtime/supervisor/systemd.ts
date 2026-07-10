@@ -17,6 +17,7 @@ import type { CommandExecutor, LogEntry, LogCallback } from "../../types";
 import type { ProcessSupervisor, SupervisorDeployOpts } from "./types";
 import { sq, parseLogLevel } from "../build-pipeline";
 import { probeListeningPort } from "../port-conflict";
+import { execReliable } from "../../system/remote-journal";
 import { DeployError } from "@repo/core";
 
 /** Prefix for all openship systemd units */
@@ -105,9 +106,15 @@ WantedBy=multi-user.target
     // Write the unit file
     await this.executor.writeFile(unitPath, unitContent);
 
-    // Reload systemd to pick up the new unit, then enable + start
+    // Reload systemd to pick up the new unit (idempotent), then enable + start.
+    // `enable --now` is the activation COMMIT — journal it exactly-once so a
+    // drop during service start doesn't leave the retry re-issuing it.
     await this.executor.exec("systemctl daemon-reload");
-    await this.executor.exec(`systemctl enable --now ${sq(unitName)}`);
+    await execReliable(
+      this.executor,
+      `deploy:${opts.deploymentId}:activate`,
+      `systemctl enable --now ${sq(unitName)}`,
+    );
 
     // Track the artifact path for cleanup
     await this.writeArtifactPath(opts.deploymentId, opts.workDir);

@@ -17,6 +17,8 @@ export {
   restoreDatabase,
   DUMP_FORMAT_VERSION,
   PkCollisionError,
+  ENCRYPTED_COLUMNS,
+  stripEncryptedInPlace,
   type DatabaseDump,
   type DumpOptions,
   type RestoreOptions,

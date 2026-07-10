@@ -40,23 +40,44 @@ function deriveKey(): Buffer {
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
- * Encrypt a plaintext string.
+ * Seal a plaintext under an EXPLICIT 32-byte key. The single AES-256-GCM
+ * implementation for the whole app — `encrypt()` uses the instance key,
+ * while callers with a different key source (e.g. a passphrase-derived key
+ * for data export) reuse this so the cipher/format never diverges.
+ * Returns base64( iv:16 || authTag:16 || ciphertext ).
+ */
+export function encryptWithKey(key: Buffer, plaintext: string): string {
+  const iv = randomBytes(IV_LENGTH);
+  const cipher = createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return Buffer.concat([iv, authTag, encrypted]).toString("base64");
+}
+
+/**
+ * Open a value produced by `encryptWithKey()` (or `encrypt()`), using an
+ * explicit key. Throws if the data is tampered with or the key is wrong.
+ */
+export function decryptWithKey(key: Buffer, sealed: string): string {
+  const packed = Buffer.from(sealed, "base64");
+  if (packed.length < IV_LENGTH + AUTH_TAG_LENGTH) {
+    throw new Error("Invalid encrypted data: too short");
+  }
+  const iv = packed.subarray(0, IV_LENGTH);
+  const authTag = packed.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH);
+  const ciphertext = packed.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
+
+  const decipher = createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(authTag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+}
+
+/**
+ * Encrypt a plaintext string under the instance key.
  * Returns a base64-encoded string containing IV + auth tag + ciphertext.
  */
 export function encrypt(plaintext: string): string {
-  const key = deriveKey();
-  const iv = randomBytes(IV_LENGTH);
-
-  const cipher = createCipheriv(ALGORITHM, key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, "utf8"),
-    cipher.final(),
-  ]);
-  const authTag = cipher.getAuthTag();
-
-  // Pack: iv (16) + authTag (16) + ciphertext (variable)
-  const packed = Buffer.concat([iv, authTag, encrypted]);
-  return packed.toString("base64");
+  return encryptWithKey(deriveKey(), plaintext);
 }
 
 /**
@@ -64,26 +85,7 @@ export function encrypt(plaintext: string): string {
  * Throws if the data is tampered with or the key is wrong.
  */
 export function decrypt(sealed: string): string {
-  const key = deriveKey();
-  const packed = Buffer.from(sealed, "base64");
-
-  if (packed.length < IV_LENGTH + AUTH_TAG_LENGTH) {
-    throw new Error("Invalid encrypted data: too short");
-  }
-
-  const iv = packed.subarray(0, IV_LENGTH);
-  const authTag = packed.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH);
-  const ciphertext = packed.subarray(IV_LENGTH + AUTH_TAG_LENGTH);
-
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-
-  const decrypted = Buffer.concat([
-    decipher.update(ciphertext),
-    decipher.final(),
-  ]);
-
-  return decrypted.toString("utf8");
+  return decryptWithKey(deriveKey(), sealed);
 }
 
 /**

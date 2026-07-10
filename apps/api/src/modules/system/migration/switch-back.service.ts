@@ -104,23 +104,32 @@ export class SwitchBackRemoteUnreachableError extends Error {
  * forward migration — that's our pointer to the right VPS.
  */
 async function pullDumpFromVps(serverId: string): Promise<DatabaseDump> {
-  const remoteDumpPath = `/tmp/openship-switchback-${Date.now()}.json`;
+  const stamp = Date.now();
+  const remoteDumpPath = `/tmp/openship-switchback-${stamp}.json`;
   let payload: string | null = null;
 
   try {
+    // The deployed openship instance lives under
+    // /var/lib/openship/projects/openship-instance-<orgId>/current —
+    // same convention startWebmailDeploy uses. The org id is part
+    // of the slug; we wildcard it because there's one openship-instance
+    // dir per VPS (single org per local install).
+    const remoteProjectDir = `/var/lib/openship/projects/openship-instance-*/current`;
+    // stripEncrypted defaults to false; switch-back wants the data
+    // to come back clean (cloud session token decrypts on the local
+    // host's secret), so we DO request stripped here — the operator
+    // re-links rather than carrying potentially-stale crypto.
+    const dumpCmd = `cd ${remoteProjectDir} && bun --cwd packages/db scripts/dump.ts --out ${remoteDumpPath} --strip-encrypted`;
+    // Journaled: a large DB dump can exceed exec()'s 30s default, and a
+    // mid-dump SSH drop shouldn't force a full re-dump — re-attach and
+    // harvest instead. (Read-only on the remote, so a re-run is harmless too.)
+    await sshManager.execJournaled(
+      serverId,
+      `migrate:switchback-dump:${serverId}:${stamp}`,
+      dumpCmd,
+      { timeoutMs: 30 * 60_000 },
+    );
     await sshManager.withExecutor(serverId, async (exec) => {
-      // The deployed openship instance lives under
-      // /var/lib/openship/projects/openship-instance-<orgId>/current —
-      // same convention startWebmailDeploy uses. The org id is part
-      // of the slug; we wildcard it because there's one openship-instance
-      // dir per VPS (single org per local install).
-      const remoteProjectDir = `/var/lib/openship/projects/openship-instance-*/current`;
-      // stripEncrypted defaults to false; switch-back wants the data
-      // to come back clean (cloud session token decrypts on the local
-      // host's secret), so we DO request stripped here — the operator
-      // re-links rather than carrying potentially-stale crypto.
-      const dumpCmd = `cd ${remoteProjectDir} && bun --cwd packages/db scripts/dump.ts --out ${remoteDumpPath} --strip-encrypted`;
-      await exec.exec(dumpCmd);
       await exec.exec(`chmod 600 ${remoteDumpPath}`);
       payload = await exec.readFile(remoteDumpPath);
       await exec.exec(`rm -f ${remoteDumpPath}`);

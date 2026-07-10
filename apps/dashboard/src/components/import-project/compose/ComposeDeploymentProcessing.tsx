@@ -9,6 +9,7 @@ import { generateIcon } from "@/utils/icons";
 import { useRouter } from "next/navigation";
 import { useDeployment } from "@/context/DeploymentContext";
 import { useModal } from "@/context/ModalContext";
+import { Modal } from "@/components/ui/Modal";
 import { useToast } from "@/context/ToastContext";
 import { useTheme } from "@/components/theme-provider";
 import { deployApi } from "@/lib/api";
@@ -418,24 +419,22 @@ const ComposeDeploymentProcessing: React.FC<Props> = ({ onRedeploy }) => {
       </div>
 
       {showDecision && decisionModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          onClick={() => setDecisionModalOpen(false)}
+        <Modal
+          isOpen
+          onClose={() => setDecisionModalOpen(false)}
+          closable
+          showCloseButton={false}
+          maxWidth="640px"
         >
-          <div
-            className="w-full max-w-[640px] overflow-hidden rounded-2xl border border-border/50 bg-card shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <PartialSuccessModalContent
-              failed={failed}
-              total={total}
-              warningMessage={state.warningMessage}
-              onKeep={handleKeepDeployment}
-              onRetry={handleRetryFailed}
-              onReject={handleRejectDeployment}
-            />
-          </div>
-        </div>
+          <PartialSuccessModalContent
+            failed={failed}
+            total={total}
+            warningMessage={state.warningMessage}
+            onKeep={handleKeepDeployment}
+            onRetry={handleRetryFailed}
+            onReject={handleRejectDeployment}
+          />
+        </Modal>
       )}
     </div>
   );

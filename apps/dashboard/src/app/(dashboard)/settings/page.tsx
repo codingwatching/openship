@@ -31,6 +31,7 @@ import { InstanceInfo } from "./_components/InstanceInfo";
 import { TeamTab } from "./_components/TeamTab";
 import { NotificationsTab } from "./_components/NotificationsTab";
 import { AuditTab } from "./_components/AuditTab";
+import { DataTransferTab } from "./_components/DataTransferTab";
 import {
   SettingsSidebar,
   SettingsMobileTabs,
@@ -118,6 +119,8 @@ function SettingsPageInner() {
           {activeTab === "cloud" && selfHosted && <CloudConnection />}
 
           {activeTab === "instance" && <InstanceInfo />}
+
+          {activeTab === "data" && selfHosted && <DataTransferTab />}
         </div>
 
         {/* ── NAV (right, sticky on desktop) ── */}

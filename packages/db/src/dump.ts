@@ -138,6 +138,7 @@ const TABLES: ReadonlyArray<TableSpec> = [
   { sqlName: "invitation", table: schema.invitation, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
   { sqlName: "invitation_pending_grant", table: schema.invitationPendingGrant, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
   { sqlName: "resource_grant", table: schema.resourceGrant, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
+  { sqlName: "personal_access_token", table: schema.personalAccessToken, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: true },
 
   // User / instance settings — instance-only.
   //
@@ -153,10 +154,12 @@ const TABLES: ReadonlyArray<TableSpec> = [
 
   // Infra — instance-only.
   { sqlName: "servers", table: schema.servers, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
+  { sqlName: "server_tunnels", table: schema.serverTunnels, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
   { sqlName: "mail_servers", table: schema.mailServers, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
 
   // GitHub — instance-only.
   { sqlName: "git_installation", table: schema.gitInstallation, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
+  { sqlName: "cloud_webhook_binding", table: schema.cloudWebhookBinding, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: true },
 
   // ── Project subgraph (also part of organization scope) ─────────────────────
   //
@@ -324,26 +327,117 @@ const TABLES: ReadonlyArray<TableSpec> = [
   { sqlName: "audit_event", table: schema.auditEvent, scopes: [{ in: "instance", via: "all-rows" }], hasOrganizationId: false },
 ];
 
+// Deliberately NOT in the catalogue — ephemeral, cloud-only, or re-derived on
+// demand, so shipping them across a migration adds risk without value:
+// build_session, deployment_check_run, orphaned_resource, terminal_sessions,
+// service_terminal_sessions, verification, github_install_state,
+// github_webhook_event, oblien_webhook_event, cloud_handoff_code, and all
+// billing_* / credit_pack / stripe_* (CLOUD_MODE-only, absent on self-hosted).
+
 // Restore order = TABLES order (parents before children). Truncate uses reverse.
+
+/** sqlName → PgTable, so redaction can read column metadata (notNull/default). */
+const TABLE_BY_SQL_NAME = new Map<string, PgTable>(TABLES.map((t) => [t.sqlName, t.table]));
 
 // ─── Encrypted columns (single source of truth) ──────────────────────────────
 //
 // Encryption-stripping is centralised here — every dump applies this list when
 // stripEncrypted is true.
 
-const ENCRYPTED_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [
+export interface EncryptedColumnSpec {
+  /** SQL table name (dump `tables` key). */
+  table: string;
+  /** Drizzle field name (matches the keys in selected rows / getTableColumns). */
+  column: string;
+  /**
+   * For a JSONB column where only some sub-fields are secret (e.g.
+   * notification_channel.config = { url, hmacSecret }), redact ONLY these
+   * top-level keys and leave the rest intact. Absent = the whole column is
+   * secret and gets nulled/sentineled wholesale.
+   */
+  secretPaths?: string[];
+}
+
+/**
+ * Every encrypted-at-rest column, keyed to its table. Single source of truth
+ * for BOTH the dump-side strip (opt-in) and the restore-side null pass
+ * (mandatory — see the security note on restoreSubgraph). The
+ * data-transfer module re-encrypts these under a passphrase separately.
+ *
+ * Column value is undecryptable off-instance (key = SHA-256(BETTER_AUTH_SECRET),
+ * per-install), so it MUST be redacted on any cross-host move.
+ */
+export const ENCRYPTED_COLUMNS: ReadonlyArray<EncryptedColumnSpec> = [
   { table: "user_settings", column: "cloudSessionToken" },
   { table: "user_settings", column: "cloneTokenEncrypted" },
   { table: "project", column: "cloneTokenEncrypted" },
+  { table: "project", column: "webhookSecret" },
+  { table: "cloud_webhook_binding", column: "webhookSecret" },
   { table: "env_var", column: "value" },
   { table: "backup_destination", column: "accessKeyIdEnc" },
   { table: "backup_destination", column: "secretAccessKeyEnc" },
   { table: "backup_destination", column: "sftpPasswordEnc" },
   { table: "backup_destination", column: "sftpPrivateKeyEnc" },
   { table: "backup_destination", column: "sftpKeyPassphraseEnc" },
+  { table: "servers", column: "sshPassword" },
+  { table: "servers", column: "sshKeyPassphrase" },
+  { table: "instance_settings", column: "tunnelToken" },
   { table: "deployment", column: "envVars" },
-  { table: "notification_channel", column: "config" },
+  { table: "notification_channel", column: "config", secretPaths: ["hmacSecret", "webhookUrl"] },
 ];
+
+/**
+ * Redact one encrypted cell in-place, choosing a value that is still valid to
+ * INSERT (this runs on the restore path too). Returns true if it changed
+ * anything. Rules:
+ *   - secretPaths present → deep-clone the JSONB object, drop only those keys.
+ *   - whole column, nullable            → null
+ *   - whole column, NOT NULL + default  → delete key (let the DB default apply)
+ *   - whole column, NOT NULL, no default → "" sentinel (e.g. env_var.value)
+ */
+function redactEncryptedCell(
+  row: Record<string, unknown>,
+  spec: EncryptedColumnSpec,
+  columns: Record<string, { notNull: boolean; hasDefault: boolean }>,
+): boolean {
+  const current = row[spec.column];
+  if (current === null || current === undefined) return false;
+
+  if (spec.secretPaths && spec.secretPaths.length > 0) {
+    if (typeof current !== "object") return false;
+    const clone = structuredClone(current) as Record<string, unknown>;
+    let changed = false;
+    for (const path of spec.secretPaths) {
+      if (clone[path] !== null && clone[path] !== undefined) {
+        delete clone[path];
+        changed = true;
+      }
+    }
+    if (changed) row[spec.column] = clone;
+    return changed;
+  }
+
+  const meta = columns[spec.column];
+  if (meta?.notNull) {
+    if (meta.hasDefault) delete row[spec.column];
+    else row[spec.column] = "";
+  } else {
+    row[spec.column] = null;
+  }
+  return true;
+}
+
+/** Column metadata (notNull/hasDefault) for a table, or {} if unknown. */
+function columnMetaFor(sqlName: string): Record<string, { notNull: boolean; hasDefault: boolean }> {
+  const table = TABLE_BY_SQL_NAME.get(sqlName);
+  if (!table) return {};
+  const out: Record<string, { notNull: boolean; hasDefault: boolean }> = {};
+  for (const [name, col] of Object.entries(getTableColumns(table))) {
+    const c = col as { notNull?: boolean; hasDefault?: boolean };
+    out[name] = { notNull: !!c.notNull, hasDefault: !!c.hasDefault };
+  }
+  return out;
+}
 
 // ─── dumpSubgraph ────────────────────────────────────────────────────────────
 
@@ -457,21 +551,30 @@ function pickResolver(spec: TableSpec, scope: SubgraphScope): ScopeResolver | nu
   return null;
 }
 
-function stripEncryptedInPlace(
+/**
+ * Redact every encrypted column across a dump's tables in-place, using the
+ * NOT-NULL-safe rules (see redactEncryptedCell). Returns a per-column report.
+ * Exported so the data-transfer export can strip ciphertext from the payload
+ * AFTER it has extracted the plaintext into a separate passphrase-sealed bundle.
+ */
+export function stripEncryptedInPlace(
   tables: DatabaseDump["tables"],
 ): NonNullable<DatabaseDump["strippedEncryptedFields"]> {
   const out: NonNullable<DatabaseDump["strippedEncryptedFields"]> = [];
-  for (const { table, column } of ENCRYPTED_COLUMNS) {
-    const rows = tables[table];
+  const metaCache = new Map<string, Record<string, { notNull: boolean; hasDefault: boolean }>>();
+  for (const spec of ENCRYPTED_COLUMNS) {
+    const rows = tables[spec.table];
     if (!rows || rows.length === 0) continue;
+    let columns = metaCache.get(spec.table);
+    if (!columns) {
+      columns = columnMetaFor(spec.table);
+      metaCache.set(spec.table, columns);
+    }
     let rowsAffected = 0;
     for (const row of rows) {
-      if (row[column] !== null && row[column] !== undefined) {
-        row[column] = null;
-        rowsAffected++;
-      }
+      if (redactEncryptedCell(row, spec, columns)) rowsAffected++;
     }
-    if (rowsAffected > 0) out.push({ table, column, rowsAffected });
+    if (rowsAffected > 0) out.push({ table: spec.table, column: spec.column, rowsAffected });
   }
   return out;
 }
@@ -497,6 +600,14 @@ export interface RestoreOptions {
    * ingest (remap to SaaS org) and project transfer (remap to target org).
    */
   remapOrgId?: string;
+  /**
+   * merge-mode only: tables listed here INSERT with onConflictDoNothing, so a
+   * collision is silently skipped instead of aborting the whole transaction.
+   * Used by instance-scope merge to preserve the destination's own singleton
+   * + auth rows (instance_settings, user, organization, …) rather than fail on
+   * their guaranteed PK collision.
+   */
+  mergeConflictSkip?: string[];
 }
 
 export async function restoreSubgraph(
@@ -533,21 +644,22 @@ export async function restoreSubgraph(
       }
     }
 
-    // Pre-compute the encrypted-column set keyed by table so the insert
-    // loop below can null those fields without re-scanning ENCRYPTED_COLUMNS
-    // per row. Stripping on restore is REQUIRED (not optional like the
+    // Pre-compute the encrypted-column specs keyed by table so the insert
+    // loop below can redact those fields without re-scanning ENCRYPTED_COLUMNS
+    // per row. Redaction on restore is REQUIRED (not optional like the
     // dump-side `stripEncrypted` flag): ciphertext from the wire was
     // encrypted under a foreign instance's BETTER_AUTH_SECRET, so we
     // could never decrypt it anyway, AND accepting it verbatim lets a
     // malicious caller plant arbitrary bytes in slots that downstream
     // code treats as "trusted encrypted blob" (env_var.value, notification
     // config, clone tokens, backup destination secrets, etc.). Always
-    // null these — receivers re-link credentials post-restore.
-    const encryptedByTable = new Map<string, string[]>();
-    for (const { table, column } of ENCRYPTED_COLUMNS) {
-      const list = encryptedByTable.get(table) ?? [];
-      list.push(column);
-      encryptedByTable.set(table, list);
+    // redact these — receivers re-link credentials post-restore (the
+    // data-transfer module re-hydrates them under the local key separately).
+    const encryptedByTable = new Map<string, EncryptedColumnSpec[]>();
+    for (const spec of ENCRYPTED_COLUMNS) {
+      const list = encryptedByTable.get(spec.table) ?? [];
+      list.push(spec);
+      encryptedByTable.set(spec.table, list);
     }
 
     for (const spec of TABLES) {
@@ -555,17 +667,8 @@ export async function restoreSubgraph(
       const rows = dump.tables[spec.sqlName];
       if (!rows || rows.length === 0) continue;
 
-      // Clone every row before mutation so we don't mangle the caller's
-      // input dump object (callers may inspect it post-restore).
-      //
-      // SHALLOW CLONE — `{ ...r }` only copies top-level keys. That's
-      // sufficient TODAY because every entry in ENCRYPTED_COLUMNS
-      // targets a top-level column (env_var.value, deployment.envVars,
-      // etc.) which we overwrite with `null`. If a future ENCRYPTED_COLUMNS
-      // entry needs to redact a NESTED path (e.g. metadata.secret), this
-      // clone needs to deepen — otherwise the redaction would mutate the
-      // caller's input object.
       const encryptedCols = encryptedByTable.get(spec.sqlName);
+      const colMeta = encryptedCols ? columnMetaFor(spec.sqlName) : {};
 
       // Timestamp/date columns arrive as ISO strings whenever the dump crossed
       // the wire as JSON (cloud ingest, project transfer) — JSON.stringify turns
@@ -577,13 +680,16 @@ export async function restoreSubgraph(
         .filter(([, col]) => (col as { dataType?: string }).dataType === "date")
         .map(([name]) => name);
 
+      // Shallow-clone each row so we don't mutate the caller's input dump.
+      // redactEncryptedCell deep-clones any nested JSONB it edits (secretPaths),
+      // so a top-level `{ ...r }` is enough here.
       const prepared = rows.map((r) => {
         const next: Record<string, unknown> = { ...r };
         if (opts.remapOrgId && spec.hasOrganizationId) {
           next.organizationId = opts.remapOrgId;
         }
         if (encryptedCols) {
-          for (const col of encryptedCols) next[col] = null;
+          for (const encSpec of encryptedCols) redactEncryptedCell(next, encSpec, colMeta);
         }
         for (const col of dateCols) {
           if (typeof next[col] === "string") next[col] = new Date(next[col] as string);
@@ -594,12 +700,16 @@ export async function restoreSubgraph(
       // Shared parents (e.g. project_app, which owns many project environments
       // via the `from-root-project` resolver) may already exist on the target
       // — a re-promote re-supplies the same row, and inserting it again is a
-      // no-op, not a conflict. Skip on conflict for those; every other table
-      // keeps strict insert so a real collision still surfaces as PkCollision.
-      const isSharedParent = spec.scopes.some((s) => s.via === "from-root-project");
+      // no-op, not a conflict. Skip on conflict for those; and, in merge mode,
+      // for tables the caller flagged as expected-to-collide (singleton/auth).
+      // Every other table keeps strict insert so a real collision still
+      // surfaces as PkCollision.
+      const skipOnConflict =
+        spec.scopes.some((s) => s.via === "from-root-project") ||
+        (opts.mode === "merge" && !!opts.mergeConflictSkip?.includes(spec.sqlName));
 
       try {
-        if (isSharedParent) {
+        if (skipOnConflict) {
           await tx.insert(spec.table).values(prepared as never).onConflictDoNothing();
         } else {
           await tx.insert(spec.table).values(prepared as never);

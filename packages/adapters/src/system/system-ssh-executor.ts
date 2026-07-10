@@ -28,6 +28,7 @@ import {
   sshChildEnv,
   sshTarget,
 } from "./system-ssh";
+import { SshDisconnectedError } from "./errors";
 
 const execFileAsync = promisify(execFile);
 
@@ -68,6 +69,7 @@ export class SystemSshExecutor implements CommandExecutor {
   /** Remote-socket → local-forward-socket, one StreamLocal forward per target. */
   private socketForwards = new Map<string, Promise<string>>();
   private readonly localSockets = new Set<string>();
+  private readonly disconnectListeners = new Set<(err: Error) => void>();
   private disposed = false;
 
   /** Prefix applied to every remote command - keeps dpkg non-interactive. */
@@ -83,6 +85,48 @@ export class SystemSshExecutor implements CommandExecutor {
 
   private baseArgs(): string[] {
     return buildBaseSshArgs(this.config, this.controlPath);
+  }
+
+  onDisconnect(cb: (err: Error) => void): () => void {
+    this.disconnectListeners.add(cb);
+    return () => {
+      this.disconnectListeners.delete(cb);
+    };
+  }
+
+  /**
+   * On an SSH-level failure (exit 255 — which OpenSSH uses for ANY ssh-level
+   * error: a dropped transport AND an auth failure alike, with no granular
+   * code to tell them apart), authoritatively probe the ControlMaster with
+   * `ssh -O check` instead of guessing from locale/version-dependent stderr.
+   * Only a genuinely-dead master counts as a disconnect: we null it so the
+   * next op reopens, and notify subscribers so the manager can react.
+   */
+  private async maybeSignalDisconnect(code: number): Promise<void> {
+    if (code !== 255 || this.disposed) return;
+    // Already torn down by an earlier signal for this master — debounce.
+    if (!this.masterPromise) return;
+    if (await this.isMasterAlive()) return; // alive => this 255 was auth/command, not a drop
+    this.masterPromise = null;
+    const err = new SshDisconnectedError("SSH master connection lost");
+    for (const cb of [...this.disconnectListeners]) {
+      try { cb(err); } catch { /* listener bug must not break disconnect handling */ }
+    }
+  }
+
+  /** Authoritative ControlMaster liveness check: `ssh -O check` exits 0
+   *  ("Master running") when the multiplex socket is alive, non-zero when it's
+   *  missing/dead. Immune to stderr locale/version drift. */
+  private async isMasterAlive(): Promise<boolean> {
+    try {
+      await execFileAsync("ssh", [...this.baseArgs(), "-O", "check", sshTarget(this.config)], {
+        timeout: 5_000,
+        env: sshChildEnv(this.config),
+      });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Open (once) the multiplexed master connection. Authenticates here. */
@@ -138,7 +182,9 @@ export class SystemSshExecutor implements CommandExecutor {
       });
       child.on("close", (code) => {
         if (timer) clearTimeout(timer);
-        resolve({ stdout, stderr, code: code ?? 1, timedOut });
+        const c = code ?? 1;
+        void this.maybeSignalDisconnect(c).catch(() => {});
+        resolve({ stdout, stderr, code: c, timedOut });
       });
 
       if (opts?.input !== undefined) {
@@ -196,7 +242,9 @@ export class SystemSshExecutor implements CommandExecutor {
         resolve({ code: 1, output: err.message });
       });
       child.on("close", (code) => {
-        resolve({ code: code ?? 1, output: chunks.join("") });
+        const c = code ?? 1;
+        void this.maybeSignalDisconnect(c).catch(() => {});
+        resolve({ code: c, output: chunks.join("") });
       });
     });
   }

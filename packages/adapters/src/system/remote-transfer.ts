@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import {
   chmod,
   mkdtemp,
@@ -9,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { TRANSFER_EXCLUDES } from "@repo/core";
+import { TRANSFER_EXCLUDES, PACKAGE_ROOT_ONLY_EXCLUDES } from "@repo/core";
 import { getTarCreateArgs, getTarCreateEnv } from "../archive";
 import type { LogEntry, SshConfig } from "../types";
 import {
@@ -22,6 +23,39 @@ import {
 import { reconcileKnownHosts } from "./ssh-support";
 
 const execFileAsync = promisify(execFile);
+
+/** Names that double as real source folders — anchored to the sync root, not
+ *  matched at any depth (see stacks.ts PACKAGE_ROOT_ONLY_EXCLUDES). */
+const ROOT_ONLY_EXCLUDES = new Set<string>(PACKAGE_ROOT_ONLY_EXCLUDES);
+
+/**
+ * Push rsync filter args for a source transfer.
+ *
+ *  - Explicit caller excludes (e.g. artifact transfers) → that list, anchoring
+ *    the ambiguous output names to the sync root.
+ *  - Otherwise, if the source has a `.gitignore`, let GIT decide: rsync's
+ *    per-directory `:- .gitignore` merge applies real git semantics (nested
+ *    files, negations, anchoring), so a committed `build/` route ships and an
+ *    ignored `dist/` doesn't — no hardcoded name list involved. Floor rules
+ *    added first (first match wins): `.git` (never in .gitignore) and
+ *    `node_modules` (insurance if a repo forgot to ignore it).
+ *  - No `.gitignore` → fall back to the curated anchored list.
+ */
+function pushRsyncFilters(args: string[], localPath: string, explicit?: string[]): void {
+  if (explicit) {
+    for (const ex of explicit) {
+      args.push("--exclude", ROOT_ONLY_EXCLUDES.has(ex) ? `/${ex}` : ex);
+    }
+    return;
+  }
+  if (existsSync(join(localPath, ".gitignore"))) {
+    args.push("--exclude", ".git", "--exclude", "node_modules", "--filter", ":- .gitignore");
+    return;
+  }
+  for (const ex of TRANSFER_EXCLUDES) {
+    args.push("--exclude", ROOT_ONLY_EXCLUDES.has(ex) ? `/${ex}` : ex);
+  }
+}
 
 /**
  * Total bytes under `path` - header decoration only, NOT load-bearing.
@@ -191,9 +225,7 @@ export async function transferRemoteDirectoryWithRsync(
       return;
     }
 
-    for (const exclude of options?.excludes ?? [...TRANSFER_EXCLUDES]) {
-      args.push("--exclude", exclude);
-    }
+    pushRsyncFilters(args, localPath, options?.excludes);
 
     args.push(`${localPath}/`, target);
     onLog?.(logEntry("Using rsync with live progress for remote transfer..."));

@@ -34,12 +34,14 @@ import {
   createExecutor,
   isRetryableRemoteConnectionError,
   probeTcp,
+  runReliable,
   type CommandExecutor,
   type SshConfig,
 } from "@repo/adapters";
 import { formatDuration, systemDebug } from "@/lib/system-debug";
 import { decryptSecretField } from "@/lib/credential-encryption";
 import { resolveSafeSshKeyPath } from "@/lib/ssh-key-path";
+import { OPENSHIP_DIR } from "@/lib/openship-server-store";
 import { safeErrorMessage } from "@repo/core";
 
 const execFileAsync = promisify(execFile);
@@ -193,11 +195,68 @@ const DEFAULTS = {
 const FAIL_THRESHOLD = 2;
 const COOLDOWN_MS = 30_000;
 
+// ─── Reliable-run (journaled, exactly-once) tuning ─────────────────────────────
+
+/** Max queued journaled ops per server before run() rejects (backpressure). */
+const MAX_QUEUE_DEPTH = 100;
+/** Overall deadline for a single journaled op across reconnects (15 min —
+ *  installs/restores are long). Overridable per call. */
+const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
+/** Reconnect backoff bounds while re-driving a journaled op (matches the
+ *  tunnel-agent's 1s→30s doubling). */
+const RECONNECT_MIN_MS = 1_000;
+const RECONNECT_MAX_MS = 30_000;
+
+export interface RunOptions {
+  /** Overall deadline across reconnects (default DEFAULT_RUN_TIMEOUT_MS). */
+  timeoutMs?: number;
+  /** Per-invocation remote wait window, seconds (default 25). */
+  waitSecs?: number;
+  /** Env prefix for the journaled command (default REMOTE_ENV_PREFIX). */
+  envPrefix?: string;
+}
+
+export interface RunResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Re-exported: a journaled op interrupted with no recorded exit (unknown
+ * outcome). Canonical definition lives in @repo/adapters so the adapter
+ * runtimes and the manager throw the same type.
+ */
+export { OpInterruptedError } from "@repo/adapters";
+
+/** Constrain an opId to a filesystem/shell-safe slug (paths never need quoting
+ *  in the wrapper, so opIds never carry spaces). */
+function sanitizeOpId(opId: string): string {
+  const s = opId.replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 200);
+  if (!s) throw new Error("run() requires a non-empty opId");
+  return s;
+}
+
+interface QueuedOp {
+  opId: string;
+  command: string;
+  opts: RunOptions;
+  resolve: (r: RunResult) => void;
+  reject: (e: Error) => void;
+}
+
+interface OpQueue {
+  ops: QueuedOp[];
+  running: boolean;
+}
+
 // ─── Per-server connection state ─────────────────────────────────────────────
 
 interface ServerConnection {
   executor: CommandExecutor;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  /** Unsubscribe from the executor's onDisconnect, called when we drop it. */
+  unsubDisconnect?: () => void;
 }
 
 // ─── Manager ─────────────────────────────────────────────────────────────────
@@ -206,6 +265,10 @@ export class SshConnectionManager {
   private servers = new Map<string, ServerConnection>();
   private connecting = new Map<string, Promise<CommandExecutor>>();
   private retainCounts = new Map<string, number>();
+  /** Per-server serial FIFO queue for journaled (mutating) ops — see run(). */
+  private queues = new Map<string, OpQueue>();
+  /** Executors whose remote journal wrapper is deployed (per-instance cache). */
+  private journalReady = new WeakSet<CommandExecutor>();
   /** Circuit-breaker state per server (consecutive fails + cooldown deadline). */
   private health = new Map<string, { fails: number; unhealthyUntil: number }>();
   private destroyed = false;
@@ -256,7 +319,14 @@ export class SshConnectionManager {
     this.connecting.set(serverId, promise);
     try {
       const exec = await promise;
-      this.servers.set(serverId, { executor: exec, idleTimer: null });
+      const conn: ServerConnection = { executor: exec, idleTimer: null };
+      // React to a transport drop the instant it happens (L1). The executor has
+      // already rejected its own in-flight ops; here we drive manager-side
+      // recovery.
+      if (typeof exec.onDisconnect === "function") {
+        conn.unsubDisconnect = exec.onDisconnect((err) => this.onExecutorDisconnect(serverId, err));
+      }
+      this.servers.set(serverId, conn);
       this.touchIdleTimer(serverId);
       this.recordSuccess(serverId);
       debugSsh(`acquire:executor-ready server=${serverId} (${formatDuration(startedAt)})`);
@@ -277,6 +347,11 @@ export class SshConnectionManager {
    * If `fn` fails with a connection-level error (reset, timeout, etc.),
    * the executor is invalidated and `fn` is retried once with a fresh
    * connection. Non-connection errors propagate immediately.
+   *
+   * SEMANTICS: this is AT-LEAST-ONCE — the retry re-runs `fn` wholesale with no
+   * idempotency guard. Safe for reads and idempotent operations only. For
+   * MUTATING commands that must not double-apply, use `run()` / `execJournaled()`
+   * instead (exactly-once via the remote journal).
    */
   async withExecutor<T>(
     serverId: string,
@@ -309,6 +384,71 @@ export class SshConnectionManager {
       debugSsh(`withExecutor:failed server=${serverId} (${formatDuration(startedAt)}) ${msg}`);
       throw err;
     }
+  }
+
+  /**
+   * The executor reported a transport-level disconnect (L1). Phase 0: log it —
+   * the executor already rejected its in-flight ops and self-heals on next use
+   * (it re-dials when its client is null). Phase 1 drives reconnect + queue
+   * drain from here. A retained connection is left alone: a live terminal /
+   * stream owns it and receives its own close event.
+   */
+  private onExecutorDisconnect(serverId: string, err: Error): void {
+    debugSsh(`disconnect-detected server=${serverId}: ${safeErrorMessage(err)}`);
+  }
+
+  /**
+   * Run a MUTATING command with EXACTLY-ONCE semantics via remote journaling.
+   *
+   * Ops for one server run serially through a FIFO queue. The command is
+   * launched detached on the remote and journaled by `opId`; if the transport
+   * drops mid-command, the op is re-driven (with backoff) using the SAME opId,
+   * so the wrapper HARVESTS the recorded result instead of re-running — no
+   * duplication, and the in-flight result is recovered on reconnect.
+   *
+   * `opId` should be a stable, deterministic key for the logical operation
+   * (e.g. `deploy:<deploymentId>:<step>`) so it also survives an orchestrator
+   * restart. Throws `OpInterruptedError` if the op was interrupted with no
+   * recorded exit (unknown outcome — caller decides, never auto-reruns).
+   */
+  async run(
+    serverId: string,
+    opId: string,
+    command: string,
+    opts: RunOptions = {},
+  ): Promise<RunResult> {
+    if (this.destroyed) throw new Error("SshManager has been destroyed");
+    const safeOpId = sanitizeOpId(opId);
+    return new Promise<RunResult>((resolve, reject) => {
+      let q = this.queues.get(serverId);
+      if (!q) {
+        q = { ops: [], running: false };
+        this.queues.set(serverId, q);
+      }
+      if (q.ops.length >= MAX_QUEUE_DEPTH) {
+        reject(new Error(`SSH op queue full for server ${serverId} (max ${MAX_QUEUE_DEPTH})`));
+        return;
+      }
+      q.ops.push({ opId: safeOpId, command, opts, resolve, reject });
+      void this.drainQueue(serverId);
+    });
+  }
+
+  /**
+   * Like `run()` but throws on a non-zero exit and returns trimmed stdout — a
+   * drop-in for `exec()` on mutating commands.
+   */
+  async execJournaled(
+    serverId: string,
+    opId: string,
+    command: string,
+    opts: RunOptions = {},
+  ): Promise<string> {
+    const r = await this.run(serverId, opId, command, opts);
+    if (r.code !== 0) {
+      throw new Error(r.stderr.trim() || r.stdout.trim() || `Exit code ${r.code}`);
+    }
+    return r.stdout.trim();
   }
 
   /** Whether there's an active connection for a given server. */
@@ -433,6 +573,58 @@ export class SshConnectionManager {
     return executor;
   }
 
+  // ── Reliable-run (journaled) queue ───────────────────────────────────────
+
+  /**
+   * Process a server's op queue serially. Only one drain runs per server (the
+   * `running` flag); ops appended mid-drain are picked up by the live loop.
+   */
+  private async drainQueue(serverId: string): Promise<void> {
+    const q = this.queues.get(serverId);
+    if (!q || q.running) return;
+    q.running = true;
+    try {
+      while (q.ops.length > 0) {
+        const op = q.ops[0];
+        try {
+          const result = await this.executeJournaledOp(serverId, op);
+          q.ops.shift();
+          op.resolve(result);
+        } catch (err) {
+          q.ops.shift();
+          op.reject(err instanceof Error ? err : new Error(safeErrorMessage(err)));
+        }
+      }
+    } finally {
+      q.running = false;
+      const cur = this.queues.get(serverId);
+      if (cur && cur.ops.length === 0) this.queues.delete(serverId);
+    }
+  }
+
+  /**
+   * Drive one journaled op to a terminal result via the shared `runReliable`
+   * core: reconnect-with-backoff across drops, re-driving the SAME opId so the
+   * remote wrapper harvests instead of re-running (exactly-once). The manager
+   * layers its pool + circuit breaker around it via the acquire/hooks.
+   */
+  private executeJournaledOp(serverId: string, op: QueuedOp): Promise<RunResult> {
+    return runReliable(() => this.acquire(serverId), op.opId, op.command, {
+      baseDir: OPENSHIP_DIR,
+      timeoutMs: op.opts.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
+      waitSecs: op.opts.waitSecs,
+      envPrefix: op.opts.envPrefix,
+      reconnectMinMs: RECONNECT_MIN_MS,
+      reconnectMaxMs: RECONNECT_MAX_MS,
+      ensured: this.journalReady,
+      onRetryableDrop: () => {
+        this.dropServer(serverId);
+        this.recordFailure(serverId);
+      },
+      onSuccess: () => this.recordSuccess(serverId),
+    });
+  }
+
   // ── Circuit-breaker ────────────────────────────────────────────────────
 
   /** Milliseconds remaining in this server's cooldown, or 0 if healthy. */
@@ -501,6 +693,9 @@ export class SshConnectionManager {
     }
 
     if (conn.idleTimer) clearTimeout(conn.idleTimer);
+    if (conn.unsubDisconnect) {
+      try { conn.unsubDisconnect(); } catch { /* best-effort */ }
+    }
     this.retainCounts.delete(serverId);
     if ("dispose" in conn.executor && typeof conn.executor.dispose === "function") {
       conn.executor.dispose();

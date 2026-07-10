@@ -11,7 +11,8 @@
  */
 
 import { Hono } from "hono";
-import { internalAuth, localOnly } from "../../middleware";
+import { bodyLimit } from "hono/body-limit";
+import { internalAuth, localOnly, requireRole } from "../../middleware";
 import { secureRouter } from "../../lib/secure-router";
 import * as fs from "./filesystem.controller";
 import * as setup from "./setup.controller";
@@ -20,6 +21,7 @@ import * as serversCtrl from "./servers.controller";
 import * as rateLimit from "./rate-limit.controller";
 import * as tunnels from "./tunnels.controller";
 import * as migration from "./migration/migration.controller";
+import * as dataTransfer from "./data-transfer/data-transfer.controller";
 
 const r = secureRouter(new Hono(), {
   module: "system",
@@ -111,6 +113,21 @@ r.post("/migration/start", { tag: "settings:admin" }, migration.start);
 r.post("/migration/start-cloud", { tag: "settings:admin" }, migration.startCloud);
 r.post("/migration/start-tunnel", { tag: "settings:admin" }, migration.startTunnel);
 r.post("/migration/switch-back", { tag: "settings:admin" }, migration.switchBack);
+
+/* ── Whole-instance data export / import (owner-only) ─────────────
+ * requireRole("owner") is mandatory — the `settings:*` tag alone also
+ * admits admins/members (see lib/permission.ts), and this moves the
+ * entire database including every org's data.
+ */
+r.post("/data-transfer/export", { tag: "settings:admin" }, requireRole("owner"), dataTransfer.exportInstanceHandler);
+r.use(
+  "/data-transfer/import",
+  bodyLimit({
+    maxSize: 500_000_000,
+    onError: (c) => c.json({ error: "Import file exceeds the 500MB limit.", code: "PAYLOAD_TOO_LARGE" }, 413),
+  }),
+);
+r.post("/data-transfer/import", { tag: "settings:admin" }, requireRole("owner"), dataTransfer.importInstanceHandler);
 
 export const systemRoutes = r.hono;
 

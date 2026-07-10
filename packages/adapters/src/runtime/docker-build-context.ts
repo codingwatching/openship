@@ -1,11 +1,18 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { access, cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 
 import ignore from "ignore";
 
-import { STACKS, TRANSFER_EXCLUDES, type StackDefinition, type StackId } from "@repo/core";
+import {
+  PACKAGE_ROOT_ONLY_EXCLUDES,
+  STACKS,
+  TRANSFER_EXCLUDES,
+  type StackDefinition,
+  type StackId,
+} from "@repo/core";
 
 import type { BuildConfig, LogCallback } from "../types";
 
@@ -116,46 +123,63 @@ function getDockerContextExcludes(config: BuildConfig): Set<string> {
   return new Set([...TRANSFER_EXCLUDES, ...(stack?.cacheDirs ?? [])]);
 }
 
-function shouldCopyPath(root: string, candidate: string, excludes: Set<string>): boolean {
-  const rel = relative(root, candidate);
-  if (!rel || rel === ".") return true;
-  const parts = rel.split(sep).filter(Boolean);
-  return !parts.some((part) => excludes.has(part));
-}
+const PACKAGE_ROOT_ONLY = new Set<string>(PACKAGE_ROOT_ONLY_EXCLUDES);
 
 function toPosixPath(value: string): string {
   return value.split(sep).filter(Boolean).join("/");
 }
 
-function shouldExcludeRelativePath(
+/**
+ * Whether one directory/file entry should be pruned from the build context.
+ * Unambiguous artifact/dep/VCS names (node_modules, .git, .next, …) match at any
+ * depth. The ambiguous output names (build/dist/data) double as source-folder
+ * names, so they are pruned ONLY when the entry sits at a package root (beside a
+ * package.json) — a genuine build output — never when nested in the source tree
+ * (e.g. a Next.js `app/.../build` route). A .gitignore/.dockerignore rule always applies.
+ * Both callers walk top-down and skip a pruned dir's contents, so checking the
+ * leaf entry is sufficient.
+ */
+function isExcludedEntry(
+  entryName: string,
+  parentAbsPath: string,
   relativePath: string,
   excludes: Set<string>,
-  dockerignoreMatcher?: IgnoreMatcher,
+  ignoreMatcher?: IgnoreMatcher,
 ): boolean {
-  const normalized = toPosixPath(relativePath);
-  const parts = normalized.split("/").filter(Boolean);
-
-  if (parts.some((part) => excludes.has(part))) {
-    return true;
+  if (excludes.has(entryName)) {
+    if (!PACKAGE_ROOT_ONLY.has(entryName) || existsSync(join(parentAbsPath, "package.json"))) {
+      return true;
+    }
   }
-
-  return dockerignoreMatcher?.ignores(normalized) ?? false;
+  return ignoreMatcher?.ignores(toPosixPath(relativePath)) ?? false;
 }
 
-async function loadDockerignoreMatcher(rootPath: string): Promise<IgnoreMatcher | undefined> {
-  try {
-    const content = await readFile(join(rootPath, ".dockerignore"), "utf-8");
-    return ignore().add(content);
-  } catch {
-    return undefined;
+/**
+ * Build an ignore matcher from the source's own ignore files. `.gitignore` is
+ * the primary source of truth (git already knows source-vs-generated); a
+ * `.dockerignore` layers on top afterward so its docker-specific rules /
+ * negations win. Both use gitignore glob semantics via the `ignore` package.
+ * Returns undefined when neither file exists.
+ */
+async function loadIgnoreMatcher(rootPath: string): Promise<IgnoreMatcher | undefined> {
+  const matcher = ignore();
+  let found = false;
+  for (const name of [".gitignore", ".dockerignore"]) {
+    try {
+      matcher.add(await readFile(join(rootPath, name), "utf-8"));
+      found = true;
+    } catch {
+      /* file absent — skip */
+    }
   }
+  return found ? matcher : undefined;
 }
 
 async function pruneContextDirectory(
   rootPath: string,
   currentPath: string,
   excludes: Set<string>,
-  dockerignoreMatcher?: IgnoreMatcher,
+  ignoreMatcher?: IgnoreMatcher,
 ): Promise<void> {
   const entries = await readdir(currentPath, { withFileTypes: true });
 
@@ -164,13 +188,13 @@ async function pruneContextDirectory(
       const absolutePath = join(currentPath, entry.name);
       const relativePath = relative(rootPath, absolutePath);
 
-      if (shouldExcludeRelativePath(relativePath, excludes, dockerignoreMatcher)) {
+      if (isExcludedEntry(entry.name, currentPath, relativePath, excludes, ignoreMatcher)) {
         await rm(absolutePath, { recursive: true, force: true });
         return;
       }
 
       if (entry.isDirectory()) {
-        await pruneContextDirectory(rootPath, absolutePath, excludes, dockerignoreMatcher);
+        await pruneContextDirectory(rootPath, absolutePath, excludes, ignoreMatcher);
       }
     }),
   );
@@ -200,21 +224,17 @@ async function copyLocalSource(
   sourcePath: string,
   targetPath: string,
   excludes: Set<string>,
-  dockerignoreMatcher?: IgnoreMatcher,
+  ignoreMatcher?: IgnoreMatcher,
 ): Promise<void> {
   await cp(sourcePath, targetPath, {
     recursive: true,
     filter: (candidate) => {
-      if (!shouldCopyPath(sourcePath, candidate, excludes)) {
-        return false;
-      }
-
       const rel = relative(sourcePath, candidate);
       if (!rel || rel === ".") {
         return true;
       }
 
-      return !shouldExcludeRelativePath(rel, excludes, dockerignoreMatcher);
+      return !isExcludedEntry(basename(candidate), dirname(candidate), rel, excludes, ignoreMatcher);
     },
     force: true,
   });
@@ -301,14 +321,14 @@ export async function prepareSourceTree(
 
   try {
     if (config.localPath) {
-      const dockerignoreMatcher = await loadDockerignoreMatcher(config.localPath);
-      await copyLocalSource(config.localPath, contextDir, excludes, dockerignoreMatcher);
+      const ignoreMatcher = await loadIgnoreMatcher(config.localPath);
+      await copyLocalSource(config.localPath, contextDir, excludes, ignoreMatcher);
     } else {
       // Pass the log callback so the clone's stderr/progress lines land
       // in the build-log stream instead of being silently buffered.
       await cloneGitSource(config, contextDir, opts?.onLog);
-      const dockerignoreMatcher = await loadDockerignoreMatcher(contextDir);
-      await pruneContextDirectory(contextDir, contextDir, excludes, dockerignoreMatcher);
+      const ignoreMatcher = await loadIgnoreMatcher(contextDir);
+      await pruneContextDirectory(contextDir, contextDir, excludes, ignoreMatcher);
     }
 
     return {

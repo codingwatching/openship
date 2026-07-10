@@ -55,45 +55,49 @@ export async function dumpRemoteRestore(
   const localTmpPath = join(localTmpDir, "dump.json");
   writeFileSync(localTmpPath, payload, { encoding: "utf-8", mode: 0o600 });
 
-  const remoteDumpPath = `/tmp/openship-migrate-${Date.now()}.json`;
+  const migrateStamp = Date.now();
+  const remoteDumpPath = `/tmp/openship-migrate-${migrateStamp}.json`;
 
   try {
+    // ── 2. Push the dump file over SSH. ──────────────────────────────
+    //
+    // Idempotent (overwrite + chmod), so at-least-once withExecutor is fine.
+    // For multi-MB payloads writeFile is adequate; tens-of-MB+ would want a
+    // streaming approach.
     await sshManager.withExecutor(input.serverId, async (exec) => {
-      // ── 2. Push the dump file over SSH. ──────────────────────────────
-      //
-      // sshManager's executor exposes a `writeFile(remotePath, content)`
-      // wrapper that we already use for state files. For multi-MB
-      // payloads this is fine — bun's ssh transport batches efficiently.
-      // For tens-of-MB+ dumps we could switch to a streaming approach;
-      // this is the simplest correct path.
       await exec.writeFile(remoteDumpPath, payload);
-
       // Tight perms — dump contains hashed creds, audit log, etc.
       await exec.exec(`chmod 600 ${remoteDumpPath}`);
-
-      // ── 3. Restore on the remote. ────────────────────────────────────
-      //
-      // The remote Openship install is the operator's freshly-deployed
-      // openship app. We invoke its `db:restore` script via bun in the
-      // project's working dir. The script reads the JSON file and runs
-      // the FK-deferred transactional restore from @repo/db.
-      //
-      // Path: /var/lib/openship/projects/<slug>/current — matches the
-      // deploy pipeline's per-project layout convention.
-      //
-      // exec() throws on non-zero exit and resolves to stdout on
-      // success; CommandExecutor's contract guarantees this so we
-      // don't need a separate exit-code check here.
-      const remoteProjectDir = `/var/lib/openship/projects/${input.projectSlug}/current`;
-      await exec.exec(
-        `cd ${remoteProjectDir} && bun --cwd packages/db scripts/restore.ts --in ${remoteDumpPath}`,
-      );
-
-      // ── 4. Best-effort cleanup of the dump file on the remote. ──────
-      // Not critical — /tmp is wiped on reboot — but keeping the file
-      // around indefinitely leaks data at rest.
-      await exec.exec(`rm -f ${remoteDumpPath}`);
     });
+
+    // ── 3. Restore on the remote — EXACTLY-ONCE. ─────────────────────
+    //
+    // Destructive (wipe-then-insert) and long-running, so it must not
+    // double-apply on a reconnect. `execJournaled` runs it detached on the
+    // remote and journals the outcome by opId: an SSH drop mid-restore
+    // re-attaches and harvests instead of re-running, and a genuine
+    // interruption throws OpInterruptedError (the operator re-runs cleanly —
+    // the restore is wipe-then-insert). The opId is unique per dump so a
+    // fresh migrate is a fresh restore, not a harvest of the old one.
+    // (This also removes exec()'s 30s default timeout, which would truncate a
+    // real restore.)
+    //
+    // Path: /var/lib/openship/projects/<slug>/current — the deploy pipeline's
+    // per-project layout. execJournaled throws on non-zero exit like exec().
+    const remoteProjectDir = `/var/lib/openship/projects/${input.projectSlug}/current`;
+    await sshManager.execJournaled(
+      input.serverId,
+      `migrate:restore:${input.serverId}:${migrateStamp}`,
+      `cd ${remoteProjectDir} && bun --cwd packages/db scripts/restore.ts --in ${remoteDumpPath}`,
+      { timeoutMs: 30 * 60_000 },
+    );
+
+    // ── 4. Best-effort cleanup of the dump file on the remote. ──────
+    // Not critical — /tmp is wiped on reboot — but keeping the file
+    // around indefinitely leaks data at rest.
+    await sshManager
+      .withExecutor(input.serverId, (exec) => exec.exec(`rm -f ${remoteDumpPath}`))
+      .catch(() => {});
   } finally {
     // ── 5. Local cleanup, regardless of outcome. ─────────────────────
     try {

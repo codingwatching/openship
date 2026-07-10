@@ -45,6 +45,8 @@ export type {
   StartTunnelResult,
   SwitchBackResult,
 } from "./migration";
+export { dataTransferApi } from "./data-transfer";
+export type { DataTransferFile, ImportMode, ImportResult } from "./data-transfer";
 export { settingsApi } from "./settings";
 export type {
   BuildMode,

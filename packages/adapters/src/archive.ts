@@ -1,3 +1,9 @@
+import { PACKAGE_ROOT_ONLY_EXCLUDES } from "@repo/core";
+
+/** Names that double as real source folders — anchor them to the archive root
+ *  instead of matching at any depth (see stacks.ts). */
+const ROOT_ONLY_EXCLUDES = new Set<string>(PACKAGE_ROOT_ONLY_EXCLUDES);
+
 export interface TarTransferOptions {
   excludes?: string[];
   includes?: string[];
@@ -29,7 +35,12 @@ export function getTarCreateArgs(
   }
 
   for (const exclude of options?.excludes ?? []) {
-    args.push(`--exclude=${exclude}`);
+    // Ambiguous output names (build/dist/data) also occur as real source
+    // folders. Anchor them to the archive root (`./name` — only the top-level
+    // member is `./build`, never `./src/build`) so nested source isn't deleted
+    // in transit. Unambiguous names (node_modules, .next, …) match at any depth.
+    const pattern = ROOT_ONLY_EXCLUDES.has(exclude) ? `./${exclude}` : exclude;
+    args.push(`--exclude=${pattern}`);
   }
 
   args.push(".");

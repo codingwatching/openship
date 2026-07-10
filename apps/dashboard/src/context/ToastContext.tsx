@@ -1,145 +1,36 @@
 'use client';
 
-import React, { createContext, useState, useContext, ReactNode, useCallback, memo } from 'react';
-import styles from '@/styles/Toast.module.css';
+/**
+ * Compatibility adapter — NOT a second toast system.
+ *
+ * The one toast implementation lives in `@/components/toast` (the glassy
+ * provider mounted once in layout). This module only preserves the legacy
+ * `showToast(message, type, title?)` API for the many call sites that import
+ * it, by forwarding into that single provider. `showToast` is memoized so it
+ * stays referentially stable across renders (some consumers list it in effect
+ * deps), matching the old context's behavior.
+ */
+
+import React from 'react';
+import { useToast as useGlassyToast } from '@/components/toast';
 
 interface ToastContextProps {
   showToast: (message: string, type: 'success' | 'error', title?: string) => void;
 }
 
-const ToastContext = createContext<ToastContextProps | undefined>(undefined);
-
-/**
- * Toast accessor. Throwing on missing provider used to crash whole
- * routes (a 500 instead of "no toast") when render ordering put a
- * consumer above the provider — especially during HMR. Toasts are
- * NEVER load-bearing UI, so degrade gracefully: log once, return a
- * no-op `showToast`, and let the page render.
- */
-let warnedMissingProvider = false;
-const NOOP_TOAST: ToastContextProps = {
-  showToast: () => {
-    if (!warnedMissingProvider) {
-      warnedMissingProvider = true;
-      console.warn(
-        '[useToast] No ToastProvider in tree — toasts will be no-ops. ' +
-        'Wrap the affected subtree in <ToastProvider> from @/context/ToastContext.',
-      );
-    }
-  },
-};
 export const useToast = (): ToastContextProps => {
-  const context = useContext(ToastContext);
-  return context ?? NOOP_TOAST;
+  const { toast } = useGlassyToast();
+  const showToast = React.useCallback(
+    (message: string, type: 'success' | 'error', title?: string) => toast(type, message, title),
+    [toast],
+  );
+  return React.useMemo(() => ({ showToast }), [showToast]);
 };
 
-interface ToastProviderProps {
-  children: ReactNode;
-}
+// Passthrough: the real provider is <ToastProvider> from @/components/toast.
+// Kept so any stray mount of this legacy provider is harmless.
+export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <>{children}</>
+);
 
-interface ToastNotification {
-  id: string;
-  message: string;
-  type: 'success' | 'error';
-  title?: string;
-}
-
-// Memoized Toast component to prevent unnecessary re-renders
-const ToastItem = memo(({ toast, onRemove }: { toast: ToastNotification, onRemove: (id: string) => void }) => {
-  return (
-    <div className={`${styles.toastWrapper} ${styles[toast.type]}`}>
-      {toast.title && <h4 className={styles.toastTitle}>{toast.title}</h4>}
-      <p className={styles.toastMessage}>{toast.message}</p>
-      <button onClick={() => onRemove(toast.id)} className={styles.closeButton}>
-        ×
-      </button>
-    </div>
-  );
-});
-
-ToastItem.displayName = 'ToastItem';
-
-// Memoized toast container to prevent unnecessary re-renders
-const ToastContainer = memo(({ toasts, removeToast }: { toasts: ToastNotification[], removeToast: (id: string) => void }) => {
-  return (
-    <div className={styles.toastContainer}>
-      {toasts.map((toast) => (
-        <ToastItem key={toast.id} toast={toast} onRemove={removeToast} />
-      ))}
-    </div>
-  );
-});
-
-ToastContainer.displayName = 'ToastContainer';
-
-export const ToastProvider: React.FC<ToastProviderProps> = ({ children }) => {
-  const [toasts, setToasts] = useState<ToastNotification[]>([]);
-  const toastCounterRef = React.useRef(0);
-  const timeoutRefs = React.useRef<Map<string, NodeJS.Timeout>>(new Map());
-
-  // Generate truly unique ID using counter + timestamp
-  const generateUniqueId = useCallback(() => {
-    toastCounterRef.current += 1;
-    return `toast-${Date.now()}-${toastCounterRef.current}`;
-  }, []);
-
-  // Memoize the showToast function to prevent re-renders
-  const showToast = useCallback((message: string, type: 'success' | 'error', title?: string) => {
-    // Check for duplicate messages (prevent showing identical toasts)
-    setToasts((prev) => {
-      const isDuplicate = prev.some(
-        (toast) => toast.message === message && toast.type === type && toast.title === title
-      );
-      
-      if (isDuplicate) {
-        console.log('[Toast] Ignoring duplicate toast:', message);
-        return prev; // Don't add duplicate
-      }
-
-      const id = generateUniqueId();
-      
-      // Auto-remove the toast after 5 seconds
-      const timeoutId = setTimeout(() => {
-        setToasts((current) => current.filter((toast) => toast.id !== id));
-        timeoutRefs.current.delete(id);
-      }, 5000);
-      
-      // Store timeout reference for cleanup
-      timeoutRefs.current.set(id, timeoutId);
-      
-      return [...prev, { id, message, type, title }];
-    });
-  }, [generateUniqueId]);
-
-  // Memoize the removeToast function to prevent re-renders
-  const removeToast = useCallback((id: string) => {
-    // Clear the auto-remove timeout if it exists
-    const timeoutId = timeoutRefs.current.get(id);
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-      timeoutRefs.current.delete(id);
-    }
-    
-    setToasts((prev) => prev.filter((toast) => toast.id !== id));
-  }, []);
-
-  // Cleanup all timeouts on unmount
-  React.useEffect(() => {
-    return () => {
-      timeoutRefs.current.forEach((timeoutId) => clearTimeout(timeoutId));
-      timeoutRefs.current.clear();
-    };
-  }, []);
-
-  // Value is memoized to prevent context consumers from re-rendering unnecessarily
-  const contextValue = React.useMemo(() => ({ showToast }), [showToast]);
-
-  return (
-    <ToastContext.Provider value={contextValue}>
-      {children}
-      <ToastContainer toasts={toasts} removeToast={removeToast} />
-    </ToastContext.Provider>
-  );
-};
-
-export default ToastProvider; 
+export default ToastProvider;

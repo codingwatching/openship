@@ -233,6 +233,7 @@ function buildProductionProjectInput(
     gitBranch: data.gitBranch ?? "main",
     gitUrl: source.gitUrl,
     installationId: data.installationId,
+    autoDeploy: !!(env.CLOUD_MODE && source.gitOwner && source.gitRepo),
     framework: data.framework ?? "unknown",
     packageManager: data.packageManager ?? "npm",
     installCommand: data.installCommand,

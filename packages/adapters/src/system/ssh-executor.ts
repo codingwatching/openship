@@ -19,6 +19,7 @@ import {
 import type { Client as SshClient, SFTPWrapper } from "ssh2";
 import type { Readable, Duplex } from "node:stream";
 import { connectSshClient, openSftp, openSshUnixSocket, type StreamLocalCapableClient } from "./ssh-client";
+import { SshDisconnectedError } from "./errors";
 import { safeErrorMessage } from "@repo/core";
 
 /** Clamp a window dimension to a sane range to avoid garbage values
@@ -36,6 +37,11 @@ export class SshExecutor implements CommandExecutor {
   private client: SshClient | null = null;
   private connecting: Promise<SshClient> | null = null;
   private readonly config: SshConfig;
+  /** Subscribers notified when the transport drops (see onDisconnect). */
+  private readonly disconnectListeners = new Set<(err: Error) => void>();
+  /** In-flight cancelable ops — each entry aborts ONE exec/stream on a drop,
+   *  so a dead channel fails fast instead of hanging to its command timeout. */
+  private readonly inflight = new Set<(err: Error) => void>();
   /** Reverse-forward handlers keyed by the remote bound port (see reverseForward). */
   private readonly reverseHandlers = new Map<number, (stream: Duplex) => void>();
   /** The client the single 'tcp connection' dispatcher is attached to (re-attached on reconnect). */
@@ -55,15 +61,15 @@ export class SshExecutor implements CommandExecutor {
     this.connecting = (async () => {
       const client = await connectSshClient(this.config);
 
-      const resetClient = () => {
-        if (this.client === client) {
-          this.client = null;
-        }
+      const onTransportDown = (cause?: Error) => {
+        if (this.client !== client) return; // superseded / already handled
+        this.client = null;
+        this.handleDisconnect(cause);
       };
 
-      client.on("close", resetClient);
-      client.on("end", resetClient);
-      client.on("error", resetClient);
+      client.on("close", () => onTransportDown());
+      client.on("end", () => onTransportDown());
+      client.on("error", (err: Error) => onTransportDown(err));
 
       this.client = client;
       this.connecting = null;
@@ -71,6 +77,36 @@ export class SshExecutor implements CommandExecutor {
     })();
 
     return this.connecting;
+  }
+
+  /**
+   * Subscribe to transport-level disconnects. Returns an unsubscribe fn.
+   */
+  onDisconnect(cb: (err: Error) => void): () => void {
+    this.disconnectListeners.add(cb);
+    return () => {
+      this.disconnectListeners.delete(cb);
+    };
+  }
+
+  /**
+   * The transport died. Reject every in-flight exec/stream with a typed
+   * SshDisconnectedError — so they fail in <1s instead of hanging to their
+   * per-command timeout on a dead channel — then notify subscribers so the
+   * manager can reconnect / re-drive journaled ops.
+   */
+  private handleDisconnect(cause?: Error): void {
+    const err = new SshDisconnectedError(
+      cause?.message ? `SSH connection lost: ${cause.message}` : "SSH connection lost",
+    );
+    const aborts = [...this.inflight];
+    this.inflight.clear();
+    for (const abort of aborts) {
+      try { abort(err); } catch { /* per-op settle guard handles double-settle */ }
+    }
+    for (const cb of [...this.disconnectListeners]) {
+      try { cb(err); } catch { /* a listener bug must not break disconnect handling */ }
+    }
   }
 
   private async sftp(): Promise<SFTPWrapper> {
@@ -128,16 +164,29 @@ export class SshExecutor implements CommandExecutor {
     const client = await this.connect();
     const timeout = opts?.timeout ?? 30_000;
 
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`Command timed out after ${timeout}ms: ${command}`));
-      }, timeout);
+    return new Promise<string>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      // `abort` cancels THIS op on a transport drop; `finish` is the single
+      // settle path (guards double-settle, clears the timer, deregisters).
+      const abort = (err: Error) => finish(() => reject(err));
+      const finish = (act: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.inflight.delete(abort);
+        act();
+      };
+      this.inflight.add(abort);
+
+      timer = setTimeout(
+        () => finish(() => reject(new Error(`Command timed out after ${timeout}ms: ${command}`))),
+        timeout,
+      );
 
       client.exec(SshExecutor.ENV_PREFIX + command, (err, stream) => {
-        if (err) {
-          clearTimeout(timer);
-          return reject(err);
-        }
+        if (err) return finish(() => reject(err));
 
         let stdout = "";
         let stderr = "";
@@ -151,12 +200,10 @@ export class SshExecutor implements CommandExecutor {
         });
 
         stream.on("close", (code: number) => {
-          clearTimeout(timer);
-          if (code !== 0) {
-            reject(new Error(stderr.trim() || `Exit code ${code}`));
-          } else {
-            resolve(stdout.trim());
-          }
+          finish(() => {
+            if (code !== 0) reject(new Error(stderr.trim() || `Exit code ${code}`));
+            else resolve(stdout.trim());
+          });
         });
       });
     });
@@ -181,9 +228,23 @@ export class SshExecutor implements CommandExecutor {
   ): Promise<{ code: number; output: string }> {
     const client = await this.connect();
 
-    return new Promise((resolve, reject) => {
+    return new Promise<{ code: number; output: string }>((resolve, reject) => {
+      let settled = false;
+
+      // A transport drop mid-stream rejects with SshDisconnectedError instead
+      // of silently resolving `code ?? 1` (truncated output). Callers treat the
+      // throw as a real failure; the manager can reconnect/re-drive.
+      const abort = (err: Error) => finish(() => reject(err));
+      const finish = (act: () => void) => {
+        if (settled) return;
+        settled = true;
+        this.inflight.delete(abort);
+        act();
+      };
+      this.inflight.add(abort);
+
       client.exec(SshExecutor.ENV_PREFIX + command, (err, stream) => {
-        if (err) return reject(err);
+        if (err) return finish(() => reject(err));
 
         // Raw passthrough (see LocalExecutor.streamExec): forward the untouched
         // byte stream as rawData so the client's xterm renders "\r"/ANSI
@@ -201,7 +262,7 @@ export class SshExecutor implements CommandExecutor {
         stream.stderr.on("data", (data: Buffer) => onChunk(data, "warn"));
 
         stream.on("close", (code: number) => {
-          resolve({ code: code ?? 1, output: chunks.join("") });
+          finish(() => resolve({ code: code ?? 1, output: chunks.join("") }));
         });
       });
     });

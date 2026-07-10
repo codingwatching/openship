@@ -18,6 +18,7 @@ import type { CommandExecutor, LogEntry, LogCallback } from "../../types";
 import type { ProcessSupervisor, SupervisorDeployOpts } from "./types";
 import { sq, parseLogLevel } from "../build-pipeline";
 import { probeListeningPort } from "../port-conflict";
+import { execReliable } from "../../system/remote-journal";
 import { DeployError } from "@repo/core";
 
 export class NohupSupervisor implements ProcessSupervisor {
@@ -114,7 +115,15 @@ export class NohupSupervisor implements ProcessSupervisor {
     const detach = hasSetsid.trim() === "y" ? `setsid ${runner}` : runner;
     const spawnCmd = `{ ${detach} & echo $!; }`;
 
-    const pidStr = await this.executor.exec(spawnCmd);
+    // Spawning the process is the activation COMMIT — journal it exactly-once
+    // so a drop right after spawn (before we read the pid) can't make the retry
+    // start a SECOND copy of the app. On re-drive the wrapper harvests the
+    // recorded pid instead of re-spawning.
+    const pidStr = await execReliable(
+      this.executor,
+      `deploy:${opts.deploymentId}:spawn`,
+      spawnCmd,
+    );
     const pid = parseInt(pidStr.trim(), 10);
 
     if (isNaN(pid) || pid <= 0) {

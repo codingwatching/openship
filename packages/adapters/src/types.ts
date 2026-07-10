@@ -421,6 +421,16 @@ export interface CommandExecutor {
   dispose(): Promise<void>;
 
   /**
+   * Subscribe to transport-level disconnects (socket close/end/error, or a
+   * dead ControlMaster). The callback fires with the reason; returns an
+   * unsubscribe function. Lets the connection manager react the instant the
+   * link drops — reject in-flight ops, reconnect, re-drive journaled work —
+   * instead of waiting out per-command timeouts. Implemented by the SSH
+   * executors; undefined on LocalExecutor (never disconnects).
+   */
+  onDisconnect?(cb: (err: Error) => void): () => void;
+
+  /**
    * Run a command and return the raw stdout/stderr streams without
    * line splitting.  Enables byte-for-byte piping of command output.
    *

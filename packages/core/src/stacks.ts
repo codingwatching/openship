@@ -919,6 +919,17 @@ export const TRANSFER_EXCLUDES: readonly string[] = [
   ".dev-secrets.json",
 ];
 
+/**
+ * The subset of TRANSFER_EXCLUDES whose names are ALSO ordinary source-folder
+ * names — a Next.js `app/.../build` route, a `src/data` content dir, a `dist`
+ * source package. Matching these by name at any depth silently deletes real
+ * source, so callers must prune them ONLY when they sit at a package root
+ * (directly beside a package.json) — i.e. they are a genuine build output. The
+ * rest of TRANSFER_EXCLUDES (.git, node_modules, .next, …) are unambiguous and
+ * safe to match anywhere.
+ */
+export const PACKAGE_ROOT_ONLY_EXCLUDES: readonly string[] = ["build", "dist", "data"];
+
 /** Output directories keyed by stack - derived from STACKS */
 export const OUTPUT_DIRECTORIES: Record<string, string> = Object.fromEntries(
   Object.entries(STACKS).map(([id, s]) => [id, s.outputDirectory]),

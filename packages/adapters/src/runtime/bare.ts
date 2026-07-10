@@ -30,6 +30,7 @@ import type {
 } from "../types";
 
 import { LocalExecutor, wrapLocalBuildCommand } from "../system/executor";
+import { execReliable } from "../system/remote-journal";
 import { STACKS, TRANSFER_EXCLUDES, safeErrorMessage, type StackId, type StackDefinition } from "@repo/core";
 import { checkToolchainForStack, installTools } from "../toolchain";
 import type {
@@ -190,9 +191,16 @@ export class BareRuntime implements RuntimeAdapter {
     const previousReleaseDir = previousDeploymentId
       ? this.releaseDir(previousDeploymentId)
       : undefined;
+    // Release staging is the deploy COMMIT — journal it exactly-once so a
+    // mid-copy SSH drop re-attaches and harvests instead of re-running (and,
+    // for the non-idempotent `mv`, never double-applies). rsync and the mv
+    // fallback use distinct opIds so the fallback can't collide with a
+    // partially-recorded rsync op.
     if (previousReleaseDir && (await this.executor.exists(previousReleaseDir))) {
       try {
-        await this.executor.exec(
+        await execReliable(
+          this.executor,
+          `deploy:${deploymentId}:promote-rsync`,
           `rsync -a --delete --link-dest=${sq(previousReleaseDir)} ${sq(artifactPath)}/ ${sq(releaseDir)}/`,
         );
         await this.executor.rm(artifactPath).catch(() => {});
@@ -206,7 +214,11 @@ export class BareRuntime implements RuntimeAdapter {
       }
     }
 
-    await this.executor.exec(`mv ${sq(artifactPath)} ${sq(releaseDir)}`);
+    await execReliable(
+      this.executor,
+      `deploy:${deploymentId}:promote-mv`,
+      `mv ${sq(artifactPath)} ${sq(releaseDir)}`,
+    );
     return releaseDir;
   }
 

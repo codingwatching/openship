@@ -200,6 +200,10 @@ export const endpoints = {
       startTunnel: "system/migration/start-tunnel",
       switchBack: "system/migration/switch-back",
     },
+    dataTransfer: {
+      export: "system/data-transfer/export",
+      import: "system/data-transfer/import",
+    },
   },
 
   /* ---------------------------------------------------------------- */

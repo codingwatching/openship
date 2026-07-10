@@ -10,10 +10,11 @@ interface Toast {
   id: string;
   type: ToastType;
   message: string;
+  title?: string;
 }
 
 interface ToastContextValue {
-  toast: (type: ToastType, message: string) => void;
+  toast: (type: ToastType, message: string, title?: string) => void;
 }
 
 const ToastContext = createContext<ToastContextValue>({
@@ -31,12 +32,23 @@ const DURATION = 4500;
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const toast = useCallback((type: ToastType, message: string) => {
+  const toast = useCallback((type: ToastType, message: string, title?: string) => {
     const id = crypto.randomUUID();
-    setToasts((prev) => [...prev, { id, type, message }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, DURATION);
+    let added = false;
+    setToasts((prev) => {
+      // Skip an identical toast that's already on screen so the same
+      // error firing repeatedly doesn't stack duplicates.
+      if (prev.some((t) => t.type === type && t.message === message && t.title === title)) {
+        return prev;
+      }
+      added = true;
+      return [...prev, { id, type, message, title }];
+    });
+    if (added) {
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, DURATION);
+    }
   }, []);
 
   const dismiss = useCallback((id: string) => {
@@ -63,7 +75,12 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               `}
             >
               <span className="mt-px shrink-0">{typeIcons[t.type]}</span>
-              <span className="flex-1 leading-relaxed">{t.message}</span>
+              <div className="min-w-0 flex-1">
+                {t.title && (
+                  <p className="font-semibold leading-snug">{t.title}</p>
+                )}
+                <p className="break-words leading-relaxed">{t.message}</p>
+              </div>
             </div>
           ))}
         </div>

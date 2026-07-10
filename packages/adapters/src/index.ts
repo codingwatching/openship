@@ -123,10 +123,26 @@ export {
   isRetryableRemoteConnectionError,
   isSshAuthError,
   isRuntimeNotFoundError,
+  isSshDisconnectedError,
+  SshDisconnectedError,
 } from "./system/errors";
 export { probeTcp } from "./system/reachability";
 
 export { LocalExecutor, SshExecutor, SystemSshExecutor, createExecutor } from "./system/executor";
+export {
+  ensureRemoteJournal,
+  runJournaled,
+  runReliable,
+  execReliable,
+  parseFrame,
+  OpInterruptedError,
+  OPSH_RUN_VERSION,
+  REMOTE_ENV_PREFIX,
+  type JournalRunResult,
+  type RunJournaledOptions,
+  type ReliableRunResult,
+  type RunReliableOptions,
+} from "./system/remote-journal";
 
 export {
   checkAll as checkAllComponents,
