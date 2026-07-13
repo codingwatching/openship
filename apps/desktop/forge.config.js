@@ -79,26 +79,48 @@ module.exports = {
         }
       }
     },
+
+    // Build the macOS .dmg with hdiutil instead of @electron-forge/maker-dmg.
+    // maker-dmg pulls in appdmg -> macos-alias, a native (node-gyp) module bun
+    // doesn't build on CI's cold cache, which broke the dmg step. hdiutil ships
+    // with macOS and needs no node deps. Output lands in out/make/ so the
+    // release workflow's `find -name *.dmg` still picks it up.
+    postMake: async (_forgeConfig, makeResults) => {
+      if (process.platform !== "darwin") return makeResults;
+      const arch = process.arch; // each runner packages its own native arch
+      const appPath = path.join(__dirname, "out", `Openship-darwin-${arch}`, "Openship.app");
+      if (!existsSync(appPath)) {
+        throw new Error(`postMake: expected packaged app at ${appPath}`);
+      }
+      const dmgPath = path.join(__dirname, "out", "make", `Openship-${arch}.dmg`);
+      const staging = path.join(__dirname, "out", `dmg-staging-${arch}`);
+      execFileSync("rm", ["-rf", staging, dmgPath]);
+      execFileSync("mkdir", ["-p", staging]);
+      execFileSync("cp", ["-R", appPath, path.join(staging, "Openship.app")]);
+      execFileSync("ln", ["-s", "/Applications", path.join(staging, "Applications")]);
+      execFileSync(
+        "hdiutil",
+        ["create", "-volname", "Openship", "-srcfolder", staging, "-ov", "-format", "UDZO", dmgPath],
+        { stdio: "inherit" },
+      );
+      execFileSync("rm", ["-rf", staging]);
+      return makeResults;
+    },
   },
 
   makers: [
-    {
-      name: "@electron-forge/maker-squirrel",
-      config: { name: "openship", setupIcon: `${ICON_BASE}.ico` },
-    },
-    {
-      name: "@electron-forge/maker-dmg",
-      config: { format: "ULFO", icon: `${ICON_BASE}.icns` },
-      platforms: ["darwin"],
-    },
     {
       name: "@reforged/maker-appimage",
       config: { options: { bin: "openship", icon: `${ICON_BASE}.png` } },
       platforms: ["linux"],
     },
     {
+      // Windows ships as a zip. The Squirrel maker's bundled .exe tools
+      // (Update.exe et al.) aren't found under bun's symlinked node_modules,
+      // so releasify dies with "cannot find the file specified". A zip needs
+      // no native tooling and builds reliably on the runner.
       name: "@electron-forge/maker-zip",
-      platforms: ["darwin", "linux"],
+      platforms: ["darwin", "linux", "win32"],
     },
   ],
 };

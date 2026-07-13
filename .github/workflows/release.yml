@@ -136,8 +136,8 @@ jobs:
             asset: Openship-x64.dmg
           - os: windows-latest
             label: Windows x64
-            find: "-name *.exe"
-            asset: Openship-Setup.exe
+            find: "-name *.zip"
+            asset: Openship-win32-x64.zip
           - os: ubuntu-latest
             label: Linux x64
             find: "-name *.AppImage"
@@ -265,7 +265,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           # Upload whichever desktop installers built (fail-fast:false means a
           # single-OS failure shouldn't block the release).
-          for asset in Openship-arm64.dmg Openship-x64.dmg Openship-Setup.exe Openship.AppImage; do
+          for asset in Openship-arm64.dmg Openship-x64.dmg Openship-win32-x64.zip Openship.AppImage; do
             if [[ -f "dist/${asset}" ]]; then
               gh release upload "${TAG}" "dist/${asset}" "dist/${asset}.sha256" --clobber
             else
