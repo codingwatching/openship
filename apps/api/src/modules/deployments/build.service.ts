@@ -670,6 +670,22 @@ export async function respondToPrompt(
   return sessionManager.respondToPrompt(deploymentId, action);
 }
 
+/**
+ * Default public endpoint for a deploy that supplied none: a free subdomain from
+ * the project slug. Static sites route by path, server apps by port — an endpoint
+ * with neither is dropped downstream (see deriveEnvironmentPublicEndpoints), so
+ * pick the one the project's shape needs.
+ */
+function defaultFreeEndpoint(project: {
+  slug: string;
+  hasServer: boolean;
+  port: number | null;
+}): { domain: string; domainType: "free"; port?: string; targetPath?: string } {
+  return project.hasServer && project.port
+    ? { domain: project.slug, domainType: "free", port: String(project.port) }
+    : { domain: project.slug, domainType: "free", targetPath: "/" };
+}
+
 export async function requestBuildAccess(ctx: RequestContext, input: BuildAccessInput) {
   const {
     projectId,
@@ -711,10 +727,19 @@ export async function requestBuildAccess(ctx: RequestContext, input: BuildAccess
   let routeState = await resolveProjectRouteState(project, { projectDomains });
   const snapshot = buildConfigSnapshot(project, resolvedBranch);
 
-  if (publicEndpoints !== undefined) {
+  // Caller-supplied endpoints win. If the caller omitted them (an MCP/API deploy)
+  // AND the project has no route yet, default a free subdomain from the project
+  // slug — otherwise a static deploy creates an UNBOUND page (404) and a server
+  // deploy gets no public URL. The dashboard wizard always sends one; this is parity.
+  let nextPublicEndpoints = publicEndpoints;
+  if (nextPublicEndpoints === undefined && routeState.publicEndpoints.length === 0) {
+    nextPublicEndpoints = [defaultFreeEndpoint(project)];
+  }
+
+  if (nextPublicEndpoints !== undefined) {
     const routing = await syncProjectRouteState(project, {
       projectDomains,
-      nextPublicEndpoints: publicEndpoints,
+      nextPublicEndpoints,
       slug: routeState.publicEndpoints.find((endpoint) => endpoint.domainType === "free")?.domain,
     });
     routeState = routing;

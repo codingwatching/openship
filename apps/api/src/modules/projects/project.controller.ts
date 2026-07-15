@@ -1139,9 +1139,11 @@ export async function getGitInfo(c: Context) {
   await permission.assert(getRequestContext(c), { resourceType: "project", resourceId: id, action: "read" });
   const info = await projectService.getGitInfo(id, organizationId);
 
-  // No repo linked yet
+  // No repo linked yet — the normal state for upload/local projects, not a
+  // failure. The `code` lets the client render an inline "connect a repo" empty
+  // state instead of a full-page repo-not-found takeover (see GitSettings).
   if (!info.gitOwner || !info.gitRepo) {
-    return c.json({ success: false, error: "No repository connected" });
+    return c.json({ success: false, error: "No repository connected", code: "NO_REPOSITORY" });
   }
 
   const strategy = await resolveWebhookStrategy(info);

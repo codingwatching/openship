@@ -1627,78 +1627,106 @@ fi`;
     const primarySlug = endpointSlug(primaryEndpoint);
     const primaryCustomDomain = endpointCustomDomain(primaryEndpoint);
     const pageSlug = primarySlug ?? fallbackRuntimeName(config);
+    const wantFree = !primaryCustomDomain && !!primarySlug;
 
+    // Create a brand-new page bound the way this deploy wants. Free subdomains
+    // live on the shared `.opsh.io` zone (an account-level op): a namespace
+    // runtime (self-host) hands off to the SaaS via adminProxy, the SaaS master
+    // client creates directly. Custom-domain / no-domain pages are local creates.
+    const createFresh = async (): Promise<{ slug: string; url?: string | null }> => {
+      if (primaryCustomDomain) {
+        let pg: { slug: string; url?: string | null };
+        try {
+          const result = await this.client.pages.create({
+            workspace_id: workspaceId,
+            path: outputPath,
+            name: config.projectName ?? pageSlug,
+            slug: pageSlug,
+          });
+          pg = result.page;
+        } catch (err) {
+          throw new Error(
+            `Failed to create static page for slug "${pageSlug}" with custom domain "${primaryCustomDomain}": ${safeErrorMessage(err)}`,
+          );
+        }
+        await this.client.pages
+          .connectDomain(pg.slug, { domain: primaryCustomDomain })
+          .catch(() => {
+            // Non-fatal: page can still be accessed via slug if domain isn't verified yet
+          });
+        return { ...pg, url: pg.url ?? `https://${primaryCustomDomain}` };
+      }
+
+      if (wantFree) {
+        const createOnSharedZone =
+          this.adminProxy?.createPage ?? ((input) => this.client.pages.create(input));
+        try {
+          const result = await createOnSharedZone({
+            workspace_id: workspaceId,
+            path: outputPath,
+            name: config.projectName ?? pageSlug,
+            slug: pageSlug,
+            domain: SYSTEM.DOMAINS.CLOUD_DOMAIN,
+          });
+          return result.page;
+        } catch (err) {
+          throw new Error(
+            `Failed to create static page for slug "${pageSlug}" (${pageSlug}.opsh.io): ${safeErrorMessage(err)}`,
+          );
+        }
+      }
+
+      let pg: { slug: string; url?: string | null };
+      try {
+        const result = await this.client.pages.create({
+          workspace_id: workspaceId,
+          path: outputPath,
+          name: config.projectName ?? pageSlug,
+          slug: pageSlug,
+        });
+        pg = result.page;
+      } catch (err) {
+        throw new Error(`Failed to create static page for slug "${pageSlug}": ${safeErrorMessage(err)}`);
+      }
+      return { ...pg, url: undefined };
+    };
+
+    // Idempotent: Oblien's `pages.create` rejects a taken slug, and the slug is
+    // deterministic per project — so a REDEPLOY must reuse the project's own
+    // existing page instead of colliding with it. If that page is already bound
+    // the way this deploy wants, re-deploy fresh files in place (zero-downtime);
+    // otherwise replace it (a free subdomain can't be attached after creation,
+    // e.g. a legacy page created before endpoints were defaulted). get/deploy/
+    // delete are authoritative only when `this.client` can see the page (SaaS
+    // master); on a namespace (self-host) client get() returns null and we
+    // create via the adminProxy exactly as before — no self-host behavior change.
     let page: { slug: string; url?: string | null };
+    const existingPage = (await this.client.pages.get(pageSlug).catch(() => null))?.page ?? null;
+    const bindingMatches =
+      !!existingPage &&
+      (primaryCustomDomain
+        ? existingPage.custom_domain === primaryCustomDomain
+        : wantFree
+          ? existingPage.domain === SYSTEM.DOMAINS.CLOUD_DOMAIN
+          : true);
 
-    if (primaryCustomDomain) {
-      // Deploy with custom domain only - no free subdomain
-      let pg: { slug: string; url?: string | null };
+    if (existingPage && bindingMatches) {
       try {
-        const result = await this.client.pages.create({
+        const result = await this.client.pages.deploy(pageSlug, {
           workspace_id: workspaceId,
           path: outputPath,
-          name: config.projectName ?? pageSlug,
-          slug: pageSlug,
         });
-        pg = result.page;
+        page = result.page;
       } catch (err) {
-        throw new Error(
-          `Failed to create static page for slug "${pageSlug}" with custom domain "${primaryCustomDomain}": ${safeErrorMessage(err)}`,
-        );
+        throw new Error(`Failed to redeploy static page for slug "${pageSlug}": ${safeErrorMessage(err)}`);
       }
-
-      await this.client.pages
-        .connectDomain(pg.slug, {
-          domain: primaryCustomDomain,
-        })
-        .catch(() => {
-          // Non-fatal: page can still be accessed via slug if domain isn't verified yet
-        });
-
-      page = { ...pg, url: pg.url ?? `https://${primaryCustomDomain}` };
-    } else if (primarySlug) {
-      // Deploy with free subdomain (slug.opsh.io). Creating a page on
-      // the shared `.opsh.io` zone is an account-level (admin) op —
-      // namespace tokens can't do it. When this runtime was given an
-      // adminProxy (i.e. we're running on a local/desktop instance),
-      // hand off to the SaaS; otherwise use the direct client (SaaS
-      // master creds path).
-      const createOnSharedZone = this.adminProxy?.createPage ??
-        ((input) => this.client.pages.create(input));
-      let pg: { slug: string; url?: string | null };
-      try {
-        const result = await createOnSharedZone({
-          workspace_id: workspaceId,
-          path: outputPath,
-          name: config.projectName ?? pageSlug,
-          slug: pageSlug,
-          domain: SYSTEM.DOMAINS.CLOUD_DOMAIN,
-        });
-        pg = result.page;
-      } catch (err) {
-        throw new Error(
-          `Failed to create static page for slug "${pageSlug}" (${pageSlug}.opsh.io): ${safeErrorMessage(err)}`,
-        );
-      }
-
-      page = pg;
     } else {
-      let pg: { slug: string; url?: string | null };
-      try {
-        const result = await this.client.pages.create({
-          workspace_id: workspaceId,
-          path: outputPath,
-          name: config.projectName ?? pageSlug,
-          slug: pageSlug,
-        });
-        pg = result.page;
-      } catch (err) {
-        throw new Error(
-          `Failed to create static page for slug "${pageSlug}": ${safeErrorMessage(err)}`,
-        );
+      if (existingPage) {
+        // Wrong/missing binding (e.g. a legacy unbound page) — replace it, since
+        // the free subdomain must be set at create time.
+        await this.client.pages.delete(pageSlug).catch(() => {});
       }
-
-      page = { ...pg, url: undefined };
+      page = await createFresh();
     }
 
     // // 3. Delete the workspace - page lives independently on the edge

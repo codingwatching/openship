@@ -492,10 +492,19 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
           defaultRollbackStrategy: response.default_rollback_strategy,
         });
       } else {
-        // Check if it's a repo not found error
+        // "No repository connected" is the NORMAL state for upload/local
+        // projects, not a failure — let GitSettings render its inline
+        // "connect a repository" empty state (repository: null) instead of
+        // hijacking the whole layout with the full-page repo-not-found
+        // ErrorState. Only a genuine repo-not-found on a git-backed project
+        // (repo deleted / access lost) escalates to the full-page error.
+        const noRepoConnected =
+          response.code === "NO_REPOSITORY" ||
+          response.error?.toLowerCase().includes("no repository connected");
         const isRepoError =
-          response.error?.toLowerCase().includes("repository") ||
-          response.error?.toLowerCase().includes("repo");
+          !noRepoConnected &&
+          (response.error?.toLowerCase().includes("repository") ||
+            response.error?.toLowerCase().includes("repo"));
 
         if (isRepoError) {
           setProjectNotFound(true);
@@ -505,7 +514,7 @@ export const ProjectSettingsProvider: React.FC<ProviderProps> = ({
         setGitData((prev) => ({
           ...prev,
           isLoading: false,
-          error: response.error || "Failed to load git data",
+          error: noRepoConnected ? null : response.error || "Failed to load git data",
           repository: null,
           recentCommits: [],
         }));

@@ -626,9 +626,13 @@ export class DockerRuntime implements RuntimeAdapter {
     // `cd` into the context dir FIRST so docker resolves `-f` and the context
     // `.` from the same place (BuildKit otherwise resolves `-f` against the SSH
     // user's home, not the context).
+    // --progress=plain: over a non-TTY SSH pipe BuildKit's compact auto-progress
+    // prints terse "#N 0.xx" lines and DROPS the failed step's actual stdout/stderr
+    // (an OOM-killed `bun install`, a tsup error, …), so a failed build surfaced only
+    // as a bare "exited with code 1". Plain progress streams every line through.
     const buildCmd =
       `cd ${sq(remoteContextDir)} && ` +
-      `docker build -t ${sq(tag)}${dockerfileFlag} ` +
+      `docker build --progress=plain -t ${sq(tag)}${dockerfileFlag} ` +
       `${labelArgs} ${buildArgs} --force-rm .`;
 
     log.log(`Running on remote: ${buildCmd}`);
