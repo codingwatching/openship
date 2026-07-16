@@ -53,6 +53,39 @@ openship status
 
 You should see `Openship daemon running` with the dashboard URL.
 
+## Desktop app
+
+The desktop app bundles the whole stack — API, dashboard, and database — into a single application you run on your own machine. No server, no Docker: ideal for local development and deploying straight from a folder on disk.
+
+### Linux (AppImage)
+
+Download the AppImage and run it — no installation, no root:
+
+```bash
+curl -fsSL -o Openship.AppImage \
+  https://github.com/oblien/openship/releases/latest/download/Openship.AppImage
+
+chmod +x Openship.AppImage
+./Openship.AppImage
+```
+
+AppImages need FUSE. It's preinstalled on most distros; if not:
+
+```bash
+sudo apt-get install -y libfuse2      # Debian / Ubuntu
+```
+
+No FUSE available? Run it self-extracting instead:
+
+```bash
+./Openship.AppImage --appimage-extract-and-run
+```
+
+### macOS & Windows
+
+- **macOS** — [Apple Silicon](https://github.com/oblien/openship/releases/latest/download/Openship-arm64.dmg) · [Intel](https://github.com/oblien/openship/releases/latest/download/Openship-x64.dmg)
+- **Windows** — [Openship-Setup.exe](https://github.com/oblien/openship/releases/latest/download/Openship-Setup.exe)
+
 ## Openship Cloud
 
 Don't want to manage a server? [Sign up for Openship Cloud](https://app.openship.io) - same platform, fully managed.
