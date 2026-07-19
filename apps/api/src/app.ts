@@ -198,6 +198,10 @@ if (env.CLOUD_MODE) {
   const { mailRoutes } = await import("./modules/mail/mail.routes");
   app.route("/api/mail", mailRoutes);
 
+  /** Docker migration - inspect a server's Docker and adopt it as a project */
+  const { migrationRoutes } = await import("./modules/migration/migration.routes");
+  app.route("/api/migration", migrationRoutes);
+
   /**
    * Interactive SERVER terminal (xterm.js ↔ WebSocket ↔ ssh2 PTY).
    * Self-hosted only — exposes the host's SSH-managed servers.

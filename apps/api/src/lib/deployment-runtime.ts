@@ -1,5 +1,6 @@
 import {
   createPlatform,
+  DockerRuntime,
   type CommandExecutor,
   type DockerConnectionOptions,
   type Platform,
@@ -274,6 +275,29 @@ export async function resolveTargetPlatform(
       : undefined,
     provisionLock: createProvisionLock("provision:local"),
   });
+}
+
+/**
+ * Build a DockerRuntime pointed at an org server's Docker daemon over SSH, for
+ * READ-ONLY inspection (migrating an existing Docker deployment into Openship).
+ *
+ * Unlike `resolveTargetPlatform`, this skips routing/ssl/system managers and the
+ * provision lock — inspection never provisions. The dockerode calls multiplex
+ * over the server's pooled SSH connection. Callers MUST `await rt.dispose()` to
+ * tear down the loopback bridge; the pooled executor itself is owned by
+ * `sshManager` and is left intact.
+ */
+export async function createServerDockerRuntime(
+  serverId: string,
+  organizationId: string,
+): Promise<DockerRuntime> {
+  const server = await resolveOrgServer(serverId, organizationId);
+  const executor = await sshManager.acquire(server.id);
+  const ssh = server.sshHost ? await buildSshConfig(server) : null;
+  if (!ssh) {
+    throw new Error("Invalid SSH configuration. Check host, auth method, and credentials.");
+  }
+  return DockerRuntime.create(toDockerSshTransport(ssh, executor));
 }
 
 /** Map the shared SSH config → dockerode SSH transport options with pooled executor. */
