@@ -124,7 +124,7 @@ if (tagExists(tag)) {
 
 if (bump.kind === "current") {
   // No version change — release exactly what's committed.
-  git("push", "origin", currentBranch());
+  git("push", "origin", `refs/heads/${currentBranch()}`);
   log(`✓ pushed ${currentBranch()} (releasing current version, no bump)`);
 } else {
   for (const p of SYNCED_PKGS) writeVersion(p, next);
@@ -134,12 +134,15 @@ if (bump.kind === "current") {
   git("commit", "-m", `Bump to ${tag}`);
   log(`✓ committed`);
 
-  git("push", "origin", currentBranch());
+  git("push", "origin", `refs/heads/${currentBranch()}`);
   log(`✓ pushed bump commit`);
 }
 
 git("tag", tag);
-git("push", "origin", tag);
+// Fully-qualified refspec: a BRANCH sharing the tag's name (e.g. a leftover
+// `v0.2.0` branch) would otherwise make `git push origin v0.2.0` ambiguous
+// ("src refspec … matches more than one").
+git("push", "origin", `refs/tags/${tag}`);
 log(`✓ pushed tag ${tag} — CI is building installers for macOS, Windows & Linux`);
 
 /* ─── Final report ─────────────────────────────────────────────────── */
