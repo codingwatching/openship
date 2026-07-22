@@ -242,12 +242,21 @@ async function createInfraProvider(
     return { routing: new NoopInfraProvider(), ssl: new NoopInfraProvider() };
   }
 
-  const { detectOpenRestyPaths, ensureOpenRestyConfig } = await import("./infra/openresty-lua");
+  const { detectOpenRestyPaths, ensureOpenRestyConfig, ensureLuaScripts } = await import(
+    "./infra/openresty-lua"
+  );
   const paths = await detectOpenRestyPaths(executor);
 
   // Idempotent, but writes the SHARED nginx.conf (grep||sed). Concurrent deploys
   // would race the non-atomic edit and lose/duplicate the include — serialize it.
-  const ensureConfig = () => ensureOpenRestyConfig(executor, paths);
+  const ensureConfig = async () => {
+    await ensureOpenRestyConfig(executor, paths);
+    // Self-heal the edge Lua on EVERY deploy — a box that lost rules_guard.lua
+    // (reinstall, manual rm, a pre-embed release) would otherwise 500 every
+    // request. Cheap: one listing, writes only what's missing, reloads only if
+    // it repaired something. deployLuaScripts (with geo deps) stays install-only.
+    await ensureLuaScripts(executor, paths);
+  };
   await (config.provisionLock ? config.provisionLock.run(ensureConfig) : ensureConfig());
 
   const { NginxProvider } = await import("./infra/nginx");
