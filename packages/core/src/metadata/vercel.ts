@@ -122,6 +122,9 @@ export function parseVercelConfig(raw: string): VercelConfig | null {
   } catch {
     return null;
   }
+  // `JSON.parse("null")` succeeds → guard before property access, or a stray
+  // `null` file would throw and crash the metadata pipeline (cf. railway.ts).
+  if (typeof parsed !== "object" || parsed === null) return null;
   const cfg: VercelConfig = {};
   const installCommand = trimmed(parsed.installCommand);
   const buildCommand = trimmed(parsed.buildCommand);
