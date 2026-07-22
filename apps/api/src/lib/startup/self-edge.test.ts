@@ -39,7 +39,7 @@ const origGetuid = process.getuid;
 beforeEach(() => {
   vi.clearAllMocks();
   Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-  // @ts-expect-error — stub root so the not-root guard passes
+  // stub root so the not-root guard passes
   process.getuid = () => 0;
   h.canProceedClean = false;
   h.probeEdge.mockImplementation(async () => ({
