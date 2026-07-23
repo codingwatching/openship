@@ -206,7 +206,10 @@ function parseVolumes(vols: unknown, env: Record<string, string>): string[] {
       const vol = v as Record<string, unknown>;
       const src = vol.source ?? vol.name;
       const tgt = vol.target;
-      if (src && tgt) return `${src}:${tgt}`;
+      // Long form carries read-only intent as a separate `read_only: true`
+      // field; fold it back into the ":ro" mode suffix the short form spells.
+      const mode = vol.read_only === true ? ":ro" : "";
+      if (src && tgt) return `${src}:${tgt}${mode}`;
       if (tgt) return String(tgt);
     }
     return String(v);

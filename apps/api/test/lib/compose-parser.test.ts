@@ -352,6 +352,28 @@ services:
     ]);
   });
 
+  it("folds long-form `read_only: true` into a :ro bind (read-only intent survives)", () => {
+    const parsed = parseComposeFile(`
+services:
+  app:
+    image: nginx
+    volumes:
+      - type: bind
+        source: /host/config
+        target: /etc/nginx/conf.d
+        read_only: true
+      - type: volume
+        source: cache
+        target: /var/cache
+`);
+    // read_only must produce the ":ro" suffix downstream honors — dropping it
+    // would create a writable mount despite the config declaring read-only.
+    expect(parsed.services[0]?.volumes).toEqual([
+      "/host/config:/etc/nginx/conf.d:ro",
+      "cache:/var/cache",
+    ]);
+  });
+
   it("throws on invalid YAML (callers wrap in try/catch)", () => {
     // parseComposeFile is expected to throw on syntax errors. The caller in
     // prepare.service.ts swallows the error and continues without services.
