@@ -417,6 +417,7 @@
     "describe": {
       "slackWebhook": "Webhook de Slack",
       "discordWebhook": "Webhook de Discord",
+      "msteamsWebhook": "Webhook de Microsoft Teams",
       "inApp": "Icono de campana del panel"
     },
     "kinds": {
@@ -424,6 +425,7 @@
       "webhook": "Webhook",
       "slack": "Slack",
       "discord": "Discord",
+      "msteams": "Microsoft Teams",
       "in_app": "En la app"
     },
     "form": {
@@ -432,6 +434,7 @@
       "webhookPlaceholder": "https://example.com/openship-hook",
       "slackPlaceholder": "https://hooks.slack.com/services/...",
       "discordPlaceholder": "https://discord.com/api/webhooks/...",
+      "msteamsPlaceholder": "https://prod-00.westus.logic.azure.com/workflows/...",
       "adding": "Añadiendo…",
       "addChannel": "Añadir canal",
       "labelRequired": "La etiqueta es obligatoria"

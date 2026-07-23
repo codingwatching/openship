@@ -289,6 +289,62 @@ async function sendSlack(
   }
 }
 
+async function sendMSTeams(
+  delivery: NotificationDelivery,
+  channel: NotificationChannel,
+): Promise<void> {
+  const config = channel.config as { webhookUrl?: string };
+  if (!config?.webhookUrl) {
+    throw new Error("Microsoft Teams channel has no webhook URL configured");
+  }
+
+  // Webhook URL is encrypted at storage time.
+  const webhookUrl = decrypt(config.webhookUrl);
+
+  const { title, body } = renderMessage(delivery);
+  // Adaptive Card in the "message" envelope — the shape accepted by both
+  // Power Automate Workflows and legacy Office 365 connectors.
+  const teamsPayload = {
+    type: "message",
+    attachments: [
+      {
+        contentType: "application/vnd.microsoft.card.adaptive",
+        contentUrl: null,
+        content: {
+          $schema: "http://adaptivecards.io/schemas/adaptive-card.json",
+          type: "AdaptiveCard",
+          // 1.2 is the highest card version legacy connectors render; the
+          // card only uses 1.0-level elements so nothing is lost.
+          version: "1.2",
+          body: [
+            { type: "TextBlock", text: title, weight: "Bolder", size: "Medium", wrap: true },
+            { type: "TextBlock", text: body, wrap: true },
+          ],
+        },
+      },
+    ],
+  };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(teamsPayload),
+      signal: controller.signal,
+    });
+    // Note: Power Automate Workflows respond 202 even when the flow fails
+    // downstream — a 2xx means "accepted", not "delivered".
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Microsoft Teams webhook returned ${res.status}: ${text.slice(0, 200)}`);
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /* ─── Worker registry ─────────────────────────────────────────────────────── */
 
 const WORKERS: Record<
@@ -300,6 +356,7 @@ const WORKERS: Record<
   in_app: sendInApp,
   slack: sendSlack,
   discord: sendDiscord,
+  msteams: sendMSTeams,
 };
 
 /* ─── Runner loop ─────────────────────────────────────────────────────────── */

@@ -25,6 +25,7 @@ import {
   Webhook,
   MessageSquare,
   MessageCircle,
+  MessagesSquare,
   Smartphone,
   Plus,
   Trash2,
@@ -52,6 +53,7 @@ const CHANNEL_ICONS: Record<ChannelKind, React.ElementType> = {
   webhook: Webhook,
   slack: MessageSquare,
   discord: MessageCircle,
+  msteams: MessagesSquare,
   in_app: Smartphone,
 };
 
@@ -60,6 +62,7 @@ const CHANNEL_LABELS: Record<ChannelKind, string> = {
   webhook: "Webhook",
   slack: "Slack",
   discord: "Discord",
+  msteams: "Microsoft Teams",
   in_app: "In-app",
 };
 
@@ -259,7 +262,7 @@ function ChannelsCard({
 
 function describeChannel(
   ch: NotificationChannel,
-  labels: { slackWebhook: string; discordWebhook: string; inApp: string },
+  labels: { slackWebhook: string; discordWebhook: string; msteamsWebhook: string; inApp: string },
 ): string {
   switch (ch.kind) {
     case "email":
@@ -272,6 +275,8 @@ function describeChannel(
       );
     case "discord":
       return labels.discordWebhook;
+    case "msteams":
+      return labels.msteamsWebhook;
     case "in_app":
       return labels.inApp;
     default:
@@ -326,7 +331,8 @@ function NewChannelForm({
     let config: Record<string, unknown> = {};
     if (kind === "email") config = { address: address.trim() };
     else if (kind === "webhook") config = { url: url.trim() };
-    else if (kind === "slack" || kind === "discord") config = { webhookUrl: webhookUrl.trim() };
+    else if (kind === "slack" || kind === "discord" || kind === "msteams")
+      config = { webhookUrl: webhookUrl.trim() };
 
     setBusy(true);
     try {
@@ -356,6 +362,7 @@ function NewChannelForm({
           <option value="webhook">{t.settings.notifications.kinds.webhook}</option>
           <option value="slack">{t.settings.notifications.kinds.slack}</option>
           <option value="discord">{t.settings.notifications.kinds.discord}</option>
+          <option value="msteams">{t.settings.notifications.kinds.msteams}</option>
           <option value="in_app">{t.settings.notifications.kinds.in_app}</option>
         </select>
         <input
@@ -412,6 +419,15 @@ function NewChannelForm({
         <input
           type="url"
           placeholder={t.settings.notifications.form.discordPlaceholder}
+          value={webhookUrl}
+          onChange={(e) => setWebhookUrl(e.target.value)}
+          className="w-full bg-background border border-border/50 rounded-lg px-3 py-2 text-sm"
+        />
+      )}
+      {kind === "msteams" && (
+        <input
+          type="url"
+          placeholder={t.settings.notifications.form.msteamsPlaceholder}
           value={webhookUrl}
           onChange={(e) => setWebhookUrl(e.target.value)}
           className="w-full bg-background border border-border/50 rounded-lg px-3 py-2 text-sm"
@@ -606,6 +622,7 @@ function OrgDefaultsCard({
                 <option value="webhook">{t.settings.notifications.kinds.webhook}</option>
                 <option value="slack">{t.settings.notifications.kinds.slack}</option>
                 <option value="discord">{t.settings.notifications.kinds.discord}</option>
+                <option value="msteams">{t.settings.notifications.kinds.msteams}</option>
                 <option value="in_app">{t.settings.notifications.kinds.in_app}</option>
               </select>
               <Toggle

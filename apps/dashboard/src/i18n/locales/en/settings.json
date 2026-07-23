@@ -500,6 +500,7 @@
     "describe": {
       "slackWebhook": "Slack webhook",
       "discordWebhook": "Discord webhook",
+      "msteamsWebhook": "Microsoft Teams webhook",
       "inApp": "Dashboard bell icon"
     },
     "kinds": {
@@ -507,6 +508,7 @@
       "webhook": "Webhook",
       "slack": "Slack",
       "discord": "Discord",
+      "msteams": "Microsoft Teams",
       "in_app": "In-app"
     },
     "form": {
@@ -515,6 +517,7 @@
       "webhookPlaceholder": "https://example.com/openship-hook",
       "slackPlaceholder": "https://hooks.slack.com/services/...",
       "discordPlaceholder": "https://discord.com/api/webhooks/...",
+      "msteamsPlaceholder": "https://prod-00.westus.logic.azure.com/workflows/...",
       "adding": "Adding…",
       "addChannel": "Add channel",
       "labelRequired": "Label is required",

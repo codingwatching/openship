@@ -27,6 +27,7 @@
  *   in_app    delivery row read by the dashboard's bell icon
  *   slack     POST to Slack incoming-webhook URL the user pasted
  *   discord   POST to Discord webhook URL with a markdown-aware embed
+ *   msteams   POST Adaptive Card to a Teams Workflows / legacy connector webhook URL
  */
 
 import {
@@ -54,9 +55,10 @@ export const notificationChannel = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
 
-    /** "email" | "webhook" | "in_app" | "slack". Stored as text so we can
-     *  add new channel kinds without a schema migration. The dispatcher's
-     *  channel registry decides which kinds are dispatchable. */
+    /** "email" | "webhook" | "in_app" | "slack" | "discord" | "msteams".
+     *  Stored as text so we can add new channel kinds without a schema
+     *  migration. The dispatcher's channel registry decides which kinds
+     *  are dispatchable. */
     kind: text("kind").notNull(),
 
     /** Display label the user picks ("My personal Slack", "On-call email").
@@ -69,6 +71,8 @@ export const notificationChannel = pgTable(
      *   webhook → { url: string, hmacSecret: string (encrypted) }
      *   in_app  → {} (no config)
      *   slack   → { webhookUrl: string (encrypted), channelName?: string }
+     *   discord → { webhookUrl: string (encrypted) }
+     *   msteams → { webhookUrl: string (encrypted) }
      */
     config: jsonb("config").notNull().default({}),
 

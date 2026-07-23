@@ -417,6 +417,7 @@
     "describe": {
       "slackWebhook": "Slack-Webhook",
       "discordWebhook": "Discord-Webhook",
+      "msteamsWebhook": "Microsoft Teams-Webhook",
       "inApp": "Glockensymbol im Dashboard"
     },
     "kinds": {
@@ -424,6 +425,7 @@
       "webhook": "Webhook",
       "slack": "Slack",
       "discord": "Discord",
+      "msteams": "Microsoft Teams",
       "in_app": "In-App"
     },
     "form": {
@@ -432,6 +434,7 @@
       "webhookPlaceholder": "https://example.com/openship-hook",
       "slackPlaceholder": "https://hooks.slack.com/services/...",
       "discordPlaceholder": "https://discord.com/api/webhooks/...",
+      "msteamsPlaceholder": "https://prod-00.westus.logic.azure.com/workflows/...",
       "adding": "Wird hinzugefügt…",
       "addChannel": "Kanal hinzufügen",
       "labelRequired": "Bezeichnung ist erforderlich"

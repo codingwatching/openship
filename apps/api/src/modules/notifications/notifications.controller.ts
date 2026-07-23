@@ -23,7 +23,7 @@ import { encrypt } from "../../lib/encryption";
 import { CATEGORIES } from "../../lib/notification-categories";
 import { randomBytes } from "node:crypto";
 
-const VALID_CHANNEL_KINDS = new Set(["email", "webhook", "in_app", "slack", "discord"]);
+const VALID_CHANNEL_KINDS = new Set(["email", "webhook", "in_app", "slack", "discord", "msteams"]);
 
 /* ─── Categories (static, no DB) ─────────────────────────────────────── */
 
@@ -303,8 +303,8 @@ interface ConfigErr {
 
 /**
  * Sanitize + normalize the inbound config per kind. Secrets (webhook
- * URLs, Slack URLs, HMAC keys) are stored encrypted — the dispatcher
- * decrypts at delivery time.
+ * URLs, Slack/Discord/Teams URLs, HMAC keys) are stored encrypted — the
+ * dispatcher decrypts at delivery time.
  *
  * Returns either { ok: true, value } or { ok: false, error }.
  */
@@ -351,6 +351,28 @@ function sanitizeChannelConfig(kind: string, raw: unknown): ConfigOk | ConfigErr
       const out: Record<string, unknown> = { webhookUrl: encrypt(webhookUrl) };
       return { ok: true, value: out };
     }
+    case "msteams": {
+      const webhookUrl = String(cfg.webhookUrl ?? "").trim();
+      if (!webhookUrl) return { ok: false, error: "Invalid Microsoft Teams webhook URL" };
+      // Power Automate Workflows live on *.logic.azure.com; legacy
+      // connectors on *.webhook.office.com. Suffix-match the hostname so
+      // lookalike domains (e.g. evil-logic.azure.com.attacker.io) fail.
+      try {
+        const parsed = new URL(webhookUrl);
+        if (
+          parsed.protocol !== "https:" ||
+          !(
+            parsed.hostname.endsWith(".logic.azure.com") ||
+            parsed.hostname.endsWith(".webhook.office.com")
+          )
+        ) {
+          return { ok: false, error: "Invalid Microsoft Teams webhook URL" };
+        }
+      } catch {
+        return { ok: false, error: "Invalid Microsoft Teams webhook URL" };
+      }
+      return { ok: true, value: { webhookUrl: encrypt(webhookUrl) } };
+    }
     default:
       return { ok: false, error: `Unsupported channel kind: ${kind}` };
   }
@@ -359,8 +381,8 @@ function sanitizeChannelConfig(kind: string, raw: unknown): ConfigOk | ConfigErr
 /**
  * Strip secrets from the channel config before returning to the client.
  * Email address is non-secret; webhook URL is shown but HMAC secret is
- * masked; Slack URL is masked entirely (showing it would let anyone with
- * dashboard access post to the channel).
+ * masked; Slack/Discord/Teams URLs are masked entirely (showing them
+ * would let anyone with dashboard access post to the channel).
  */
 function redactChannelConfig(
   kind: string,
@@ -383,6 +405,10 @@ function redactChannelConfig(
         channelName: cfg.channelName ?? null,
       };
     case "discord":
+      return {
+        webhookUrlConfigured: !!cfg.webhookUrl,
+      };
+    case "msteams":
       return {
         webhookUrlConfigured: !!cfg.webhookUrl,
       };

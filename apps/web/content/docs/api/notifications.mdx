@@ -6,7 +6,7 @@ description: Manage delivery channels, per-event subscriptions, org defaults, an
 import { TypeTable } from "fumadocs-ui/components/type-table";
 
 The Notifications API decides who hears about events like a failed deploy or an expiring SSL cert, and how.
-You register **channels** (where alerts go — email, webhook, Slack, Discord, or the in-app bell), toggle
+You register **channels** (where alerts go — email, webhook, Slack, Discord, Microsoft Teams, or the in-app bell), toggle
 **subscriptions** (which event categories reach each channel), set org-wide **defaults** for new members, and
 read **deliveries** (the alert feed behind the bell icon). In the dashboard this is the **Settings →
 Notifications** page. Channels, subscriptions, and deliveries are per-user; defaults are per-org.
@@ -71,7 +71,7 @@ POST /api/notifications/channels
 <TypeTable
   type={{
     kind: {
-      type: '"email" | "webhook" | "in_app" | "slack" | "discord"',
+      type: '"email" | "webhook" | "in_app" | "slack" | "discord" | "msteams"',
       description: "The channel type. Any other value is rejected.",
       required: true,
     },
@@ -114,8 +114,18 @@ The `config` shape depends on `kind`:
       description:
         'A https://discord.com/api/webhooks/... incoming-webhook URL. Required for kind "discord".',
     },
+    "msteams.webhookUrl": {
+      type: "string",
+      description: 'A Microsoft Teams incoming-webhook URL. Required for kind "msteams".',
+    },
   }}
 />
+
+<Callout title="Getting a Teams webhook URL" type="info">
+  In Teams, create a **Workflow** with the **"When a Teams webhook request is received"** trigger
+  and use the URL it generates. Legacy `webhook.office.com` connector URLs are also accepted. The
+  URL is stored encrypted and comes back as `webhookUrlConfigured` in responses, never in full.
+</Callout>
 
 ```bash
 curl -X POST https://your-host/api/notifications/channels \
@@ -209,7 +219,7 @@ PUT /api/notifications/defaults
       required: true,
     },
     defaultChannelKind: {
-      type: '"email" | "webhook" | "in_app" | "slack" | "discord"',
+      type: '"email" | "webhook" | "in_app" | "slack" | "discord" | "msteams"',
       description: "Which channel kind the default routes to.",
       default: '"email"',
     },
@@ -249,11 +259,12 @@ curl "https://your-host/api/notifications/deliveries?unseen=true&limit=20" \
 ## Errors you might see
 
 <Callout title="400 — invalid channel or missing fields" type="warn">
-  The `kind` isn't one of `email`/`webhook`/`in_app`/`slack`/`discord`, `label` is missing, or the
-  `config` failed its per-kind check (a malformed email, a non-`http(s)` webhook URL, a Slack URL
-  that isn't `https://hooks.slack.com/...`, or a Discord URL that isn't
-  `https://discord.com/api/webhooks/...`). Subscriptions need `category`, `channelId`, and a boolean
-  `enabled`; defaults need `category` and a boolean `defaultEnabled`.
+  The `kind` isn't one of `email`/`webhook`/`in_app`/`slack`/`discord`/`msteams`, `label` is
+  missing, or the `config` failed its per-kind check (a malformed email, a non-`http(s)` webhook
+  URL, a Slack URL that isn't `https://hooks.slack.com/...`, a Discord URL that isn't
+  `https://discord.com/api/webhooks/...`, or a Teams URL that isn't an https Workflow or
+  `webhook.office.com` URL). Subscriptions need `category`, `channelId`, and a boolean `enabled`;
+  defaults need `category` and a boolean `defaultEnabled`.
 </Callout>
 
 <Callout title="404 on a per-user route" type="error">
