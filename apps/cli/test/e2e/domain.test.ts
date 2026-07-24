@@ -60,3 +60,35 @@ describe("openship domain list", () => {
     expect(fetchStub.calls).toHaveLength(1);
   });
 });
+
+// ─── add ─────────────────────────────────────────────────────────────────────
+
+describe("openship domain add", () => {
+  const ADDED = {
+    data: { id: "d9", hostname: "app.example.com" },
+    records: { mode: "selfhosted", records: [{ type: "CNAME", host: "app", value: "edge.example.net" }] },
+  };
+
+  it("POSTs the hostname to /domains and points the user at verify", async () => {
+    fetchStub = stubFetch(() => ({ status: 201, json: ADDED }));
+    const { err, code } = await runCommand(domainCommand, ["add", "app.example.com", "-p", "prj1"]);
+    expect(code).toBe(0);
+    expect(fetchStub.calls[0].method).toBe("POST");
+    expect(fetchStub.calls[0].url).toBe(`${API}/domains`);
+    expect(fetchStub.calls[0].body).toEqual({ projectId: "prj1", hostname: "app.example.com", isPrimary: false });
+    expect(err).toContain("openship domain verify d9"); // next-step hint names the new id
+  });
+
+  it("sets isPrimary when --primary is passed", async () => {
+    fetchStub = stubFetch(() => ({ status: 201, json: ADDED }));
+    await runCommand(domainCommand, ["add", "app.example.com", "-p", "prj1", "--primary"]);
+    expect(fetchStub.calls[0].body).toMatchObject({ isPrimary: true });
+  });
+
+  it("emits the domain and its DNS records as JSON in json mode", async () => {
+    setJsonMode(true);
+    fetchStub = stubFetch(() => ({ status: 201, json: ADDED }));
+    const { out } = await runCommand(domainCommand, ["add", "app.example.com", "-p", "prj1"]);
+    expect(JSON.parse(out)).toEqual({ domain: ADDED.data, records: ADDED.records });
+  });
+});
