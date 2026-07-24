@@ -519,28 +519,18 @@ export async function getContainerInfo(ctx: RequestContext, projectId: string) {
  * the active org only (not cross-org).
  */
 export async function getDashboardStats(ctx: RequestContext) {
-  const { rows: projects, total: totalProjects } = await repos.project.listByOrganization(
-    ctx.organizationId,
-    { page: 1, perPage: 10_000 },
-  );
+  const [projectCounts, deploymentsByStatus] = await Promise.all([
+    repos.project.countByOrganization(ctx.organizationId),
+    repos.deployment.countByStatusForOrganization(ctx.organizationId),
+  ]);
 
-  const activeProjects = projects.filter((p) => p.activeDeploymentId).length;
-
-  // Aggregate deployment counts across all projects
   let totalDeployments = 0;
-  let failedDeployments = 0;
-  let successDeployments = 0;
-
-  for (const p of projects.slice(0, 50)) {
-    // Limit to 50 projects for perf
-    const { rows } = await repos.deployment.listByProject(p.id, { page: 1, perPage: 100 });
-    totalDeployments += rows.length;
-    failedDeployments += rows.filter((d) => d.status === "failed").length;
-    successDeployments += rows.filter((d) => d.status === "ready").length;
-  }
+  for (const count of Object.values(deploymentsByStatus)) totalDeployments += count;
+  const successDeployments = deploymentsByStatus["ready"] ?? 0;
+  const failedDeployments = deploymentsByStatus["failed"] ?? 0;
 
   return {
-    projects: { total: totalProjects, active: activeProjects },
+    projects: { total: projectCounts.total, active: projectCounts.active },
     deployments: {
       total: totalDeployments,
       success: successDeployments,
